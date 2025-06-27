@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package filetransfer.v1;
+option go_package = "eddisonso.com/go-gfs/proto/filetransfer;filetransfer";
+
+service FileService {
+  rpc UploadFile(UploadFileRequest) returns (UploadFileResponse);
+  rpc DownloadFile(DownloadFileRequest) returns (DownloadFileResponse);
+}
+
+message UploadFileRequest {
+  string filename = 1;
+  int32 bytes = 2;
+}
+
+message DownloadFileRequest {
+  string filename = 1;
+}
+
+message UploadFileResponse {
+  bool success = 1;
+  string transactionid = 2;
+}
+
+message DownloadFileResponse{
+  bool success = 1;
+  string transactionid = 2;
+}
