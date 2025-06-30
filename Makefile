@@ -27,6 +27,7 @@ proto: check-tools
 	@echo "Generating protobuf Go code..."
 	@mkdir -p $(OUT_DIR)
 	$(PROTOC) \
+		-I $(PROTO_DIR) \
 		--go_out=$(OUT_DIR) \
 		--go-grpc_out=$(OUT_DIR) \
 		--go_opt=paths=source_relative \
