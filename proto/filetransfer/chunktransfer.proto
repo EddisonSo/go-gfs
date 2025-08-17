@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package chunktransfer.v1;
+option go_package = "eddisonso.com/go-gfs/proto/filetransfer;filetransfer";
+
+service ChunkService {
+  rpc UploadChunk(UploadChunkRequest) returns (UploadChunkResponse);
+  rpc DownloadChunk(DownloadChunkRequest) returns (DownloadChunkResponse);
+}
+
+message UploadChunkRequest {
+  string chunkId = 1;
+  int32 bytes = 2;
+}
+
+message DownloadChunkRequest {
+  string chunkId = 1;
+}
+
+message UploadChunkResponse {
+  bool success = 1;
+  string transactionid = 2;
+}
+
+message DownloadChunkResponse {
+  bool success = 1;
+  string transactionid = 2;
+}
