@@ -5,21 +5,30 @@ import (
 	pb "eddisonso.com/go-gfs/gen/filetransfer"
 )
 
-type FileServiceServer struct {
-	pb.UnimplementedFileServiceServer
+type ChunkServiceServer struct {
+	pb.UnimplementedChunkServiceServer
 }
 
-func (s *FileServiceServer) UploadFile(ctx context.Context, req *pb.UploadFileRequest) (*pb.UploadFileResponse, error) {
+func (s *ChunkServiceServer) UploadChunk(ctx context.Context, req *pb.UploadChunkRequest) (*pb.UploadChunkResponse, error) {
 	// TODO: Implement upload logic
-	return &pb.UploadFileResponse{
+	chunkId := req.GetChunkId()
+	nBytes := req.GetBytes()
+
+	
+
+	return &pb.UploadChunkResponse{
 		Success:       true,
 		Transactionid: "TRANSACTION_ID",
 	}, nil
 }
 
-func (s *FileServiceServer) DownloadFile(ctx context.Context, req *pb.DownloadFileRequest) (*pb.DownloadFileResponse, error) {
+func (s *ChunkServiceServer) DownloadChunk(ctx context.Context, req *pb.DownloadChunkRequest) (*pb.DownloadChunkResponse, error) {
 	// TODO: Implement download logic
-	return &pb.DownloadFileResponse{
+	chunkId := req.GetChunkId()
+
+	
+
+	return &pb.DownloadChunkResponse{
 		Success:       true,
 		Transactionid: "TRANSACTION_ID",
 	}, nil
