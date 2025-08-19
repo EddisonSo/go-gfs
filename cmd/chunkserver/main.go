@@ -4,9 +4,9 @@ import (
 	"log"
 	"net"
 
-	"google.golang.org/grpc"
 	pb "eddisonso.com/go-gfs/gen/filetransfer"
 	"eddisonso.com/go-gfs/internal/chunkserver"
+	"google.golang.org/grpc"
 )
 
 func main() {
