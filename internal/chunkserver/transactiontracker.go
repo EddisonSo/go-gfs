@@ -57,4 +57,3 @@ func (tt *TransactionTracker) RemoveTransaction(transactionID string) {
 		fmt.Println("Transaction with ID", transactionID, "does not exist.")
 	}
 }
-
