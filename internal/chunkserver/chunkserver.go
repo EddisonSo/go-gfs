@@ -14,8 +14,6 @@ func (s *ChunkServiceServer) UploadChunk(ctx context.Context, req *pb.UploadChun
 	chunkId := req.GetChunkId()
 	nBytes := req.GetBytes()
 
-	
-
 	return &pb.UploadChunkResponse{
 		Success:       true,
 		Transactionid: "TRANSACTION_ID",
@@ -26,11 +24,8 @@ func (s *ChunkServiceServer) DownloadChunk(ctx context.Context, req *pb.Download
 	// TODO: Implement download logic
 	chunkId := req.GetChunkId()
 
-	
-
 	return &pb.DownloadChunkResponse{
 		Success:       true,
 		Transactionid: "TRANSACTION_ID",
 	}, nil
 }
-
