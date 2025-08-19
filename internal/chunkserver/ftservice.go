@@ -1,27 +1,55 @@
 package chunkserver
 
 import (
-	"fmt"
+	"log/slog"
 	"net"
 	"os"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 type FileDownloadService struct {
 	addr    string
 	rootDir string
 	timeout int
+	transactions *TransactionTracker
 }
 
 func NewFileDownloadService(address, rootDir string, timeout int) *FileDownloadService {
 	return &FileDownloadService{
+		transactions: NewTransactionTracker(),
 		addr:    address,
 		rootDir: rootDir,
 		timeout: timeout,
 	}
 }
 
-func handle(conn net.Conn) {
+func (fds *FileDownloadService) handle(conn net.Conn) {
 	defer conn.Close()
+
+	slog.Info("New connection established", "remote_addr", conn.RemoteAddr().String())
+
+	uuidBytes := make([]byte, 16)
+	n, err := conn.Read(uuidBytes)
+
+	if err != nil {
+		slog.Error("Failed to read transactionID from connection", "error", err)
+		return
+	}
+
+	if n != 16 {
+		slog.Error("Invalid transactionID length", "expected", 16, "got", n)
+		return
+	}
+
+	transactionID, err := uuid.FromBytes(uuidBytes)
+	if err != nil {
+		slog.Error("Failed to parse transactionID", "error", err)
+		return
+	}
+
+	transaction := fds.transactions.GetTransaction(transactionID.String())
 }
 
 func (fds *FileDownloadService) DownloadFile() error {
@@ -38,12 +66,12 @@ func (fds *FileDownloadService) ListenAndServe() error {
 		panic(err)
 	}
 
-	fmt.Println("listening on", fds.addr)
+	slog.Info("FileDownloadService is listening", "address", fds.addr)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			panic(err)
 		}
-		go handle(conn)
+		go fds.handle(conn)
 	}
 }
