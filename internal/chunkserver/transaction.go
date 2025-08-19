@@ -1,5 +1,9 @@
 package chunkserver
 
+import (
+	"github.com/google/uuid"
+)
+
 const (
 	UPLOAD = iota
 	DOWNLOAD = iota
@@ -12,7 +16,7 @@ const (
  * Operation: Type of operation being performed (UPLOAD or DOWNLOAD).
  */
 type Transaction struct {
-	TransactionID string
+	TransactionID uuid.UUID
 	ChunkID       string
 	Operation     int
 }
@@ -21,7 +25,8 @@ type Transaction struct {
 /*
  * Creates a new transaction with the given transaction ID, chunk ID, and operation type.
  */
-func NewTransaction(transactionID string, chunkID string, operation int) *Transaction {
+func NewTransaction(chunkID string, operation int) *Transaction {
+	transactionID := uuid.New()
 	return &Transaction{
 		TransactionID: transactionID,
 		ChunkID:       chunkID,
@@ -40,7 +45,7 @@ func (t *Transaction) GetOperation() int {
 /*
  * Returns the transaction ID of the transaction.
  */
-func (t *Transaction) GetTransactionID() string {
+func (t *Transaction) GetTransactionID() uuid.UUID {
 	return t.TransactionID
 }
 
