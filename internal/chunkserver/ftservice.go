@@ -4,8 +4,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"time"
-
 	"github.com/google/uuid"
 )
 
