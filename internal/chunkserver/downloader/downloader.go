@@ -7,32 +7,18 @@ import (
 	"net"
 	"os"
 	"strconv"
-
-	"eddisonso.com/go-gfs/internal/chunkserver/csconfig"
+	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 type FileDownloadService struct {
-	ChunkServerConfig csconfig.ChunkServerConfig
+	ChunkServerConfig csstructs.ChunkServerConfig
 	timeout int
 }
 
-type ReplicaIdentifier struct {
-	ID   string `json:"id"`
-	Hostname string `json:"hostname"`
-}
 
-type DownloadRequestClaims struct {
-    ChunkHandle string `json:"chunk_handle"`
-    Operation string `json:"operation"`
-    Filesize int64 `json:"file_size"`
-    Replicas []ReplicaIdentifier `json:"replicas"`
-    Primary ReplicaIdentifier `json:"primary"`
-    jwt.RegisteredClaims
-}
-
-func NewFileDownloadService(config csconfig.ChunkServerConfig, timeout int) *FileDownloadService {
+func NewFileDownloadService(config csstructs.ChunkServerConfig, timeout int) *FileDownloadService {
 	return &FileDownloadService {
 		ChunkServerConfig: config,
 		timeout: timeout,
@@ -48,7 +34,8 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 	n, err := conn.Read(nBytes)
 
 	if err != nil {
-		panic(err)
+		slog.Error("Failed to read JWT length", "error", err)
+		return
 	}
 
 	if n != 4 {
@@ -72,14 +59,14 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 
 	jwtTokenString := string(jwtToken)
 
-	token, err := jwt.ParseWithClaims(jwtTokenString, &DownloadRequestClaims{}, secrets.GetSecret)
+	token, err := jwt.ParseWithClaims(jwtTokenString, &csstructs.DownloadRequestClaims{}, secrets.GetSecret)
 
 	if err != nil {
 		slog.Error("Failed to parse JWT token", "error", err)
 		return
 	}
 
-	claims, ok := token.Claims.(*DownloadRequestClaims)
+	claims, ok := token.Claims.(*csstructs.DownloadRequestClaims)
 	if !ok || !token.Valid {
 		slog.Error("Invalid JWT token")
 		return
@@ -110,12 +97,14 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 		totalBytes += int64(n)
 		if n > 0 {
 			if _, werr := file.Write(buf[:n]); werr != nil {
-				panic(werr)
+				slog.Error("Failed to write to file", "file", claims.ChunkHandle, "error", werr)
+				return
 			}
 		}
 		if err != nil {           // io.EOF means clean close
 			if err == io.EOF { break }
-			panic(err)
+			slog.Error("Error reading from connection", "error", err)
+			return
 		}
 	}
 	if totalBytes != claims.Filesize {
@@ -127,19 +116,22 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 
 func (fds *FileDownloadService) ListenAndServe() error {
 	if err := os.MkdirAll(fds.ChunkServerConfig.Dir, 0o755); err != nil {
-		panic(err)
+		slog.Error("Failed to create directory", "dir", fds.ChunkServerConfig.Dir, "error", err)
+		return err
 	}
 
 	ln, err := net.Listen("tcp", fds.ChunkServerConfig.Hostname + ":" + strconv.Itoa(fds.ChunkServerConfig.Port))
 	if err != nil {
-		panic(err)
+		slog.Error("Failed to start listener", "address", fds.ChunkServerConfig.Hostname + ":" + strconv.Itoa(fds.ChunkServerConfig.Port), "error", err)
+		return err
 	}
 
 	slog.Info("FileDownloadService is listening", "address", fds.ChunkServerConfig.Hostname + ":" + strconv.Itoa(fds.ChunkServerConfig.Port))
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			panic(err)
+			slog.Error("Failed to accept connection", "error", err)
+			continue
 		}
 		go fds.handle(conn)
 	}
