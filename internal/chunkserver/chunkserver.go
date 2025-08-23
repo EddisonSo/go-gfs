@@ -2,15 +2,15 @@ package chunkserver
 
 import (
 	"eddisonso.com/go-gfs/internal/chunkserver/downloader"
-	"eddisonso.com/go-gfs/internal/chunkserver/csconfig"
+	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 )
 
 type ChunkServer struct {
-	config csconfig.ChunkServerConfig
+	config csstructs.ChunkServerConfig
 }
 
 
-func NewChunkServer(config csconfig.ChunkServerConfig) *ChunkServer {
+func NewChunkServer(config csstructs.ChunkServerConfig) *ChunkServer {
 	return &ChunkServer{
 		config: config,
 	}
