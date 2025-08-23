@@ -4,12 +4,12 @@ import (
 	"fmt"
 
 	"eddisonso.com/go-gfs/internal/chunkserver"
-	"eddisonso.com/go-gfs/internal/chunkserver/csconfig"
+	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 )
 
 func main() {
 	fmt.Println("Starting Chunk Server...")
-	config := csconfig.ChunkServerConfig{
+	config := csstructs.ChunkServerConfig{
 		Hostname: "localhost",
 		Port:     8080,
 		Id:       "chunkserver-1",
