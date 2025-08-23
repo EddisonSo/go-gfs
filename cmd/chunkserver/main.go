@@ -13,7 +13,7 @@ func main() {
 		Hostname: "localhost",
 		Port:     8080,
 		Id:       "chunkserver-1",
-		Dir:      "/tmp/chunkserver",
+		Dir:      "tmp/",
 	}
 
 	chunkserver := chunkserver.NewChunkServer(config)

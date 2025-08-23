@@ -33,7 +33,7 @@ func main() {
 	claims := csstructs.DownloadRequestClaims{
 		ChunkHandle: "1234",
 		Operation: "download",
-		Filesize: 4,
+		Filesize: 5,
 		Replicas: []csstructs.ReplicaIdentifier{r2, r3},
 		Primary: r1,
 	}
@@ -57,6 +57,10 @@ func main() {
 		panic(err)
 	}
 
-
 	_, err = conn.Write([]byte(tokenString))
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = conn.Write([]byte("hello"))
 }

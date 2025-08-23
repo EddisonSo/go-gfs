@@ -83,7 +83,7 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 	}
 
 	buf := make([]byte, 1024*1024) // 1 MB buffer
-	file, err := os.Open(fds.ChunkServerConfig.Dir + "/" + claims.ChunkHandle)
+	file, err := os.OpenFile(fds.ChunkServerConfig.Dir + "/" + claims.ChunkHandle, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
     
 	if err != nil {
 		slog.Error("Failed to open file", "file", claims.ChunkHandle, "error", err)
@@ -107,10 +107,7 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 			return
 		}
 	}
-	if totalBytes != claims.Filesize {
-		slog.Warn("File size mismatch", "expected", claims.Filesize, "actual", totalBytes)
-		return
-	}
+	slog.Info("File download completed", "file", claims.ChunkHandle, "bytes_written", totalBytes)
 	file.Sync()
 }
 
