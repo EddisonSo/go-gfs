@@ -1,31 +1,22 @@
 package chunkserver
 
 import (
-	"context"
-	pb "eddisonso.com/go-gfs/gen/filetransfer"
+	"eddisonso.com/go-gfs/internal/chunkserver/downloader"
+	"eddisonso.com/go-gfs/internal/chunkserver/csconfig"
 )
 
-type ChunkServiceServer struct {
-	pb.UnimplementedChunkServiceServer
+type ChunkServer struct {
+	config csconfig.ChunkServerConfig
 }
 
-func (s *ChunkServiceServer) UploadChunk(ctx context.Context, req *pb.UploadChunkRequest) (*pb.UploadChunkResponse, error) {
-	// TODO: Implement upload logic
-	chunkId := req.GetChunkId()
-	nBytes := req.GetBytes()
 
-	return &pb.UploadChunkResponse{
-		Success:       true,
-		Transactionid: "TRANSACTION_ID",
-	}, nil
+func NewChunkServer(config csconfig.ChunkServerConfig) *ChunkServer {
+	return &ChunkServer{
+		config: config,
+	}
 }
 
-func (s *ChunkServiceServer) DownloadChunk(ctx context.Context, req *pb.DownloadChunkRequest) (*pb.DownloadChunkResponse, error) {
-	// TODO: Implement download logic
-	chunkId := req.GetChunkId()
-
-	return &pb.DownloadChunkResponse{
-		Success:       true,
-		Transactionid: "TRANSACTION_ID",
-	}, nil
+func (cs *ChunkServer) Start() {
+	downloaderService := downloader.NewFileDownloadService(cs.config, 60)
+	downloaderService.ListenAndServe()
 }
