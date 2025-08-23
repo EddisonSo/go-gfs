@@ -1,27 +1,21 @@
 package main
 
 import (
-	"log"
-	"net"
+	"fmt"
 
-	pb "eddisonso.com/go-gfs/gen/filetransfer"
 	"eddisonso.com/go-gfs/internal/chunkserver"
-	"google.golang.org/grpc"
+	"eddisonso.com/go-gfs/internal/chunkserver/csconfig"
 )
 
 func main() {
-	lis, err := net.Listen("tcp", ":50051")
-	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
+	fmt.Println("Starting Chunk Server...")
+	config := csconfig.ChunkServerConfig{
+		Hostname: "localhost",
+		Port:     8080,
+		Id:       "chunkserver-1",
+		Dir:      "/tmp/chunkserver",
 	}
 
-	grpcServer := grpc.NewServer()
-
-	pb.RegisterFileServiceServer(grpcServer, &chunkserver.FileServiceServer{})
-
-	log.Println("gRPC server listening on :50051")
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("failed to serve: %v", err)
-	}
-
+	chunkserver := chunkserver.NewChunkServer(config)
+	chunkserver.Start()
 }
