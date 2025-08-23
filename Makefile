@@ -9,7 +9,7 @@ PROTOC_GEN_GO := $(shell which protoc-gen-go)
 PROTOC_GEN_GO_GRPC := $(shell which protoc-gen-go-grpc)
 
 # Main build targets
-all: proto chunkserver master client
+all: proto chunkserver master client tester
 
 chunkserver:
 	mkdir -p build
@@ -22,6 +22,10 @@ master:
 client:
 	mkdir -p build
 	go build -o ./build/client ./cmd/client/
+
+tester:
+	mkdir -p build
+	go build -o ./build/tester ./cmd/tester
 
 proto: check-tools
 	@echo "Generating protobuf Go code..."
@@ -46,5 +50,5 @@ check-tools:
 		exit 1; \
 	fi
 
-.PHONY: all chunkserver master client proto clean check-tools
+.PHONY: all chunkserver master client tester proto clean check-tools
 
