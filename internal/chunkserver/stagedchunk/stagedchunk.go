@@ -4,6 +4,7 @@ import (
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"io"
 	"bytes"
+	"sync"
 )
 
 type StagedChunk struct {
@@ -12,6 +13,7 @@ type StagedChunk struct {
 	Status csstructs.StageState
 	buf []byte
 	pos int
+	mux sync.Mutex
 }
 
 func NewStagedChunk(chunkHandle string, opId string, status csstructs.StageState, size int64) *StagedChunk {
@@ -23,6 +25,8 @@ func NewStagedChunk(chunkHandle string, opId string, status csstructs.StageState
 }
 
 func (sc *StagedChunk) Read(p []byte) (int, error) {
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
 	if sc.pos >= len(sc.buf) {
 		return 0, io.EOF
 	}

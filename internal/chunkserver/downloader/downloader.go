@@ -102,7 +102,7 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 	coordinator := fanoutcoordinator.NewFanoutCoordinator(conn)
 	coordinator.SetStagedChunk(stagedchunk)
 	coordinator.AddReplicas(claims.Replicas)
-	coordinator.StartFanout(ctx)
+	coordinator.StartFanout(ctx, conn)
 }
 
 func (fds *FileDownloadService) ListenAndServe() error {
