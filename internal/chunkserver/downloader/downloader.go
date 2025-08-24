@@ -7,16 +7,19 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"github.com/google/uuid"
 
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/fanoutcoordinator"
 	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
+	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
+	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 type FileDownloadService struct {
 	ChunkServerConfig csstructs.ChunkServerConfig
-	ChunkStatingTrackingService *csstructs.ChunkStagingTrackingService
+	ChunkStagingTrackingService *chunkstagingtrackingservice.ChunkStagingTrackingService
 	timeout int
 }
 
@@ -24,6 +27,7 @@ type FileDownloadService struct {
 func NewFileDownloadService(config csstructs.ChunkServerConfig, timeout int) *FileDownloadService {
 	return &FileDownloadService {
 		ChunkServerConfig: config,
+		ChunkStagingTrackingService: chunkstagingtrackingservice.GetChunkStagingTrackingService(),
 		timeout: timeout,
 	}
 }
@@ -85,7 +89,13 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 		slog.Error("Invalid file size", "file_size", claims.Filesize)
 	}
 
-	stagedchunk := fds.ChunkStatingTrackingService.CreateStagedChunk()
+	stagedchunk := stagedchunk.NewStagedChunk(
+		claims.ChunkHandle,
+		uuid.New().String(),
+		csstructs.Receiving,
+		claims.Filesize,
+	)
+	fds.ChunkStagingTrackingService.AddStagedChunk(stagedchunk)
 
 	ctx := context.TODO()
 
