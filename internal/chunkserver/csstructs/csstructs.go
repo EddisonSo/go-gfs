@@ -32,3 +32,9 @@ const (
 	Applied
 	Aborted
 )
+
+type Action int
+const (
+	Download Action = iota
+	Upload
+)
