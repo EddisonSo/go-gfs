@@ -24,3 +24,11 @@ type DownloadRequestClaims struct {
 	Primary ReplicaIdentifier `json:"primary"`
 	jwt.RegisteredClaims
 }
+
+type StageState int
+const (
+	Receiving StageState = iota
+	Staged
+	Applied
+	Aborted
+)
