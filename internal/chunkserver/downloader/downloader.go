@@ -24,15 +24,21 @@ type FileDownloadService struct {
 }
 
 
-func NewFileDownloadService(config csstructs.ChunkServerConfig, timeout int) *FileDownloadService {
-	return &FileDownloadService {
+func NewFileDownloadService(config csstructs.ChunkServerConfig, timeout int) (*FileDownloadService, error) {
+	fds := &FileDownloadService {
 		ChunkServerConfig: config,
 		ChunkStagingTrackingService: chunkstagingtrackingservice.GetChunkStagingTrackingService(),
 		timeout: timeout,
 	}
+	if err := os.MkdirAll(fds.ChunkServerConfig.Dir, 0o755); err != nil {
+		slog.Error("Failed to create directory", "dir", fds.ChunkServerConfig.Dir, "error", err)
+		return nil, err
+	}
+	
+	return fds, nil
 }
 
-func (fds *FileDownloadService) handle(conn net.Conn) {
+func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	defer conn.Close()
 
 	slog.Info("New connection established", "remote_addr", conn.RemoteAddr().String())
@@ -103,27 +109,4 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 	coordinator.SetStagedChunk(stagedchunk)
 	coordinator.AddReplicas(claims.Replicas)
 	coordinator.StartFanout(ctx, conn)
-}
-
-func (fds *FileDownloadService) ListenAndServe() error {
-	if err := os.MkdirAll(fds.ChunkServerConfig.Dir, 0o755); err != nil {
-		slog.Error("Failed to create directory", "dir", fds.ChunkServerConfig.Dir, "error", err)
-		return err
-	}
-
-	ln, err := net.Listen("tcp", fds.ChunkServerConfig.Hostname + ":" + strconv.Itoa(fds.ChunkServerConfig.Port))
-	if err != nil {
-		slog.Error("Failed to start listener", "address", fds.ChunkServerConfig.Hostname + ":" + strconv.Itoa(fds.ChunkServerConfig.Port), "error", err)
-		return err
-	}
-
-	slog.Info("FileDownloadService is listening", "address", fds.ChunkServerConfig.Hostname + ":" + strconv.Itoa(fds.ChunkServerConfig.Port))
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			slog.Error("Failed to accept connection", "error", err)
-			continue
-		}
-		go fds.handle(conn)
-	}
 }
