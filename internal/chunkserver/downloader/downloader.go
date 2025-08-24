@@ -1,14 +1,16 @@
 package downloader
 
 import (
+	"context"
 	"encoding/binary"
 	"log/slog"
 	"net"
 	"os"
 	"strconv"
+
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
-	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
 	"eddisonso.com/go-gfs/internal/chunkserver/fanoutcoordinator"
+	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -85,10 +87,12 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 
 	stagedchunk := fds.ChunkStatingTrackingService.CreateStagedChunk()
 
+	ctx := context.TODO()
+
 	coordinator := fanoutcoordinator.NewFanoutCoordinator(conn)
 	coordinator.SetStagedChunk(stagedchunk)
 	coordinator.AddReplicas(claims.Replicas)
-	coordinator.Start()
+	coordinator.StartFanout(ctx)
 }
 
 func (fds *FileDownloadService) ListenAndServe() error {
