@@ -86,8 +86,8 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 	stagedchunk := fds.ChunkStatingTrackingService.CreateStagedChunk()
 
 	coordinator := fanoutcoordinator.NewFanoutCoordinator(conn)
-	coordinator.AddStagedChunk(stagedchunk)
-	coordinator.AddStreams(claims.Replicas)
+	coordinator.SetStagedChunk(stagedchunk)
+	coordinator.AddReplicas(claims.Replicas)
 	coordinator.Start()
 }
 
