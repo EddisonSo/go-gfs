@@ -2,18 +2,19 @@ package downloader
 
 import (
 	"encoding/binary"
-	"io"
 	"log/slog"
 	"net"
 	"os"
 	"strconv"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
+	"eddisonso.com/go-gfs/internal/chunkserver/fanoutcoordinator"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 type FileDownloadService struct {
 	ChunkServerConfig csstructs.ChunkServerConfig
+	ChunkStatingTrackingService *csstructs.ChunkStagingTrackingService
 	timeout int
 }
 
@@ -82,33 +83,12 @@ func (fds *FileDownloadService) handle(conn net.Conn) {
 		slog.Error("Invalid file size", "file_size", claims.Filesize)
 	}
 
-	buf := make([]byte, 1024*1024) // 1 MB buffer
-	file, err := os.OpenFile(fds.ChunkServerConfig.Dir + "/" + claims.ChunkHandle, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-    
-	if err != nil {
-		slog.Error("Failed to open file", "file", claims.ChunkHandle, "error", err)
-		return
-	}
-	defer file.Close()
+	stagedchunk := fds.ChunkStatingTrackingService.CreateStagedChunk()
 
-	totalBytes := int64(0)
-	for {
-		n, err := conn.Read(buf)
-		totalBytes += int64(n)
-		if n > 0 {
-			if _, werr := file.Write(buf[:n]); werr != nil {
-				slog.Error("Failed to write to file", "file", claims.ChunkHandle, "error", werr)
-				return
-			}
-		}
-		if err != nil {           // io.EOF means clean close
-			if err == io.EOF { break }
-			slog.Error("Error reading from connection", "error", err)
-			return
-		}
-	}
-	slog.Info("File download completed", "file", claims.ChunkHandle, "bytes_written", totalBytes)
-	file.Sync()
+	coordinator := fanoutcoordinator.NewFanoutCoordinator(conn)
+	coordinator.AddStagedChunk(stagedchunk)
+	coordinator.AddStreams(claims.Replicas)
+	coordinator.Start()
 }
 
 func (fds *FileDownloadService) ListenAndServe() error {
