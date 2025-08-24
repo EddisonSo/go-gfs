@@ -14,12 +14,11 @@ type StagedChunk struct {
 	pos int
 }
 
-func NewStagedChunk(chunkHandle string, opId string, status csstructs.StageState, data []byte) *StagedChunk {
+func NewStagedChunk(chunkHandle string, opId string, status csstructs.StageState, size int64) *StagedChunk {
 	return &StagedChunk{
 		ChunkHandle: chunkHandle,
 		OpId: opId,
 		Status: status,
-		buf: data,
 	}
 }
 
