@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"strconv"
 	"github.com/google/uuid"
 
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
@@ -40,8 +39,6 @@ func NewFileDownloadService(config csstructs.ChunkServerConfig, timeout int) (*F
 
 func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	defer conn.Close()
-
-	slog.Info("New connection established", "remote_addr", conn.RemoteAddr().String())
 
 	nBytes := make([]byte, 4)
 	n, err := conn.Read(nBytes)
@@ -105,8 +102,8 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 
 	ctx := context.TODO()
 
-	coordinator := fanoutcoordinator.NewFanoutCoordinator(conn)
+	coordinator := fanoutcoordinator.NewFanoutCoordinator(claims.Replicas, stagedchunk)
 	coordinator.SetStagedChunk(stagedchunk)
 	coordinator.AddReplicas(claims.Replicas)
-	coordinator.StartFanout(ctx, conn)
+	coordinator.StartFanout(ctx, conn, jwtTokenString)
 }
