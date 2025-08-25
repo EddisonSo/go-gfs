@@ -2,12 +2,14 @@ package fanoutcoordinator
 
 import (
 	"context"
-	"net"
+	"encoding/binary"
 	"io"
 	"log/slog"
+	"net"
+
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
-	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
 	"eddisonso.com/go-gfs/internal/chunkserver/forwarder"
+	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
 )
 
 
@@ -16,8 +18,11 @@ type fanoutcoordinator struct {
 	stagedchunk *stagedchunk.StagedChunk
 }
 
-func NewFanoutCoordinator(conn net.Conn) *fanoutcoordinator {
-	return &fanoutcoordinator{}
+func NewFanoutCoordinator(replicas []csstructs.ReplicaIdentifier, stagedchunk *stagedchunk.StagedChunk) *fanoutcoordinator {
+	return &fanoutcoordinator{
+		replicas: replicas,
+		stagedchunk: stagedchunk,
+	}
 }
 
 func (f *fanoutcoordinator) AddReplicas(replicas []csstructs.ReplicaIdentifier) {
@@ -28,14 +33,25 @@ func (f *fanoutcoordinator) SetStagedChunk(stagedchunk *stagedchunk.StagedChunk)
 	f.stagedchunk = stagedchunk
 }
 
-func (f *fanoutcoordinator) StartFanout(ctx context.Context, conn net.Conn) error {
+func (f *fanoutcoordinator) StartFanout(ctx context.Context, conn net.Conn, jwtTokenString string) error {
 	forwarders := make([]*forwarder.Forwarder, len(f.replicas))
 
+	jwtLength := len(jwtTokenString)
+	lengthBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(lengthBytes, uint32(jwtLength))
+
+	slog.Info("Starting fanout", "replicas", f.replicas, "jwtLength", jwtLength)
 	
 	for i, replica := range f.replicas {
+		slog.Info("Creating forwarder", "replica", replica, "index", i)
 		forwarders[i] = forwarder.NewForwarder(replica, f.stagedchunk.OpId, f.stagedchunk.ChunkHandle)
 		go forwarders[i].StartForward()
+
+		forwarders[i].Pw.Write(lengthBytes)
+		forwarders[i].Pw.Write([]byte(jwtTokenString))
 	}
+
+	slog.Info("TEST")
 
 	buf := make([]byte, 64<<10)
 	total := 0
