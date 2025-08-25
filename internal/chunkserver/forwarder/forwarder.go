@@ -30,12 +30,14 @@ func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle 
 }
 
 func (f *Forwarder) StartForward() error {
+	slog.Info("Starting forwarder", "replica", f.replica.Hostname, "opId", f.OpId, "chunkHandle", f.chunkHandle)
 	replicaConn, err := net.Dial("tcp", f.replica.Hostname)
 	if err != nil {
 		slog.Error("Failed to connect to replica", "replica", f.replica.Hostname, "error", err)
 		return err
 	}
 	defer replicaConn.Close()
+	slog.Info("Connected to replica", "replica", f.replica.Hostname)
 
 	_, err = io.Copy(replicaConn, f.Pr)
 	if err != nil {
