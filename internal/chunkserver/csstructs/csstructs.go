@@ -6,7 +6,8 @@ import (
 
 type ChunkServerConfig struct {
 	Hostname string
-	Port     int
+	DataPort int
+	ReplicationPort int
 	Id 	 string
 	Dir 	 string
 }
