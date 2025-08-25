@@ -10,14 +10,16 @@ import (
 func main() {
 	fmt.Println("Starting Chunk Server...")
 	
-	port := flag.Int("p", 8080, "Port for the chunk server to listen on")
+	dataPort := flag.Int("p", 8080, "Port for the chunk server to listen on")
+	replicationPort := flag.Int("r", 8081, "Port for the chunk server replication service")
 	hostname := flag.String("h", "localhost", "Hostname for the chunk server")
 
 	flag.Parse()
 
 	config := csstructs.ChunkServerConfig{
 		Hostname: *hostname, 
-		Port:     *port,
+		DataPort:     *dataPort,
+		ReplicationPort: *replicationPort,
 		Id:       "chunkserver-1",
 		Dir:      "tmp/",
 	}
