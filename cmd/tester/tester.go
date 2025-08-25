@@ -15,19 +15,27 @@ func main() {
 		panic(err)
 	}
 
+	action := csstructs.Download
+	actionBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(actionBytes, uint32(action))
+	_, err = conn.Write(actionBytes)
+	if err != nil {
+		panic(err)
+	}
+
 	r1 := csstructs.ReplicaIdentifier{
 		ID: "replica1",
-		Hostname: "replica1.example.com",
+		Hostname: "replica1.example.com:8081",
 	}
 
 	r2 := csstructs.ReplicaIdentifier{
 		ID: "replica2",
-		Hostname: "replica2.example.com",
+		Hostname: "replica2.example.com:8081",
 	}
 
 	r3 := csstructs.ReplicaIdentifier{
 		ID: "replica3",
-		Hostname: "replica3.example.com",
+		Hostname: "replica3.example.com:8081",
 	}
 	
 	claims := csstructs.DownloadRequestClaims{
