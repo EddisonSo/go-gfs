@@ -15,6 +15,8 @@ type ChunkServerConfig struct {
 type ReplicaIdentifier struct {
 	ID   string `json:"id"`
 	Hostname string `json:"hostname"`
+	DataPort int
+	ReplicationPort int
 }
 
 type DownloadRequestClaims struct {
