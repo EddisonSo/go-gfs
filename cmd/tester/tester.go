@@ -10,7 +10,21 @@ import (
 )
 
 func main() {
-	conn, err := net.Dial("tcp", "localhost:8080")
+	primary := csstructs.ReplicaIdentifier{
+		ID: "replica1",
+		Hostname: "localhost",
+		DataPort: 8080,
+		ReplicationPort: 8081,
+	}
+
+	r2 := csstructs.ReplicaIdentifier{
+		ID: "replica2",
+		Hostname: "localhost",
+		DataPort: 8082,
+		ReplicationPort: 8083,
+	}
+
+	conn, err := net.Dial("tcp", primary.Hostname + ":" + fmt.Sprint(primary.DataPort))
 	if err != nil {
 		panic(err)
 	}
@@ -23,27 +37,14 @@ func main() {
 		panic(err)
 	}
 
-	r1 := csstructs.ReplicaIdentifier{
-		ID: "replica1",
-		Hostname: "replica1.example.com:8081",
-	}
 
-	r2 := csstructs.ReplicaIdentifier{
-		ID: "replica2",
-		Hostname: "replica2.example.com:8081",
-	}
-
-	r3 := csstructs.ReplicaIdentifier{
-		ID: "replica3",
-		Hostname: "replica3.example.com:8081",
-	}
 	
 	claims := csstructs.DownloadRequestClaims{
 		ChunkHandle: "1234",
 		Operation: "download",
 		Filesize: 5,
-		Replicas: []csstructs.ReplicaIdentifier{r2, r3},
-		Primary: r1,
+		Replicas: []csstructs.ReplicaIdentifier{r2},
+		Primary: primary,
 	}
     
 
