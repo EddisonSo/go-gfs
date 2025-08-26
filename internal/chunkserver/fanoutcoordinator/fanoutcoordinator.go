@@ -51,8 +51,6 @@ func (f *fanoutcoordinator) StartFanout(ctx context.Context, conn net.Conn, jwtT
 		forwarders[i].Pw.Write([]byte(jwtTokenString))
 	}
 
-	slog.Info("TEST")
-
 	buf := make([]byte, 64<<10)
 	total := 0
 	for {
