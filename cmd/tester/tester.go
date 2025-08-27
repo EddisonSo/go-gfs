@@ -19,9 +19,9 @@ func main() {
 
 	r2 := csstructs.ReplicaIdentifier{
 		ID: "replica2",
-		Hostname: "localhost",
-		DataPort: 8082,
-		ReplicationPort: 8083,
+		Hostname: "chunkserver2",
+		DataPort: 8080,
+		ReplicationPort: 8081,
 	}
 
 	conn, err := net.Dial("tcp", primary.Hostname + ":" + fmt.Sprint(primary.DataPort))

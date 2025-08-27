@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  chunkserver1:
+    image: gfs-chunkserver
+    container_name: chunkserver1
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+  chunkserver2:
+    image: gfs-chunkserver
+    container_name: chunkserver2
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8080"
+      - "8083:8081"
+
