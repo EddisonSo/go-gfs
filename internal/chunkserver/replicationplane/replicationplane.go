@@ -6,9 +6,11 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"github.com/golang-jwt/jwt/v5"
 
 	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
+	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
 )
 
 type ReplicationPlane struct {
@@ -73,7 +75,30 @@ func (rp *ReplicationPlane) Start() {
 			continue
 		}
 
-		slog.Info("Replication: Received JWT token", jwtToken)
-	}
+		slog.Info("Replication: Received JWT token", "token", jwtToken)
+		jwtTokenStr := string(jwtToken)
+		
+		token, err := jwt.ParseWithClaims(jwtTokenStr, &csstructs.DownloadRequestClaims{}, secrets.GetSecret)
 
+		if err != nil {
+			slog.Error("Failed to parse JWT token", "error", err)
+			return
+		}
+
+		claims, ok := token.Claims.(*csstructs.DownloadRequestClaims)
+		if !ok || !token.Valid {
+			slog.Error("Invalid JWT token")
+			return
+		}
+
+		slog.Info("Replication: Replication request", "chunk_handle", claims.ChunkHandle, "operation", claims.Operation)
+		if claims.Operation != "download" {
+			slog.Error("Invalid operation", "operation", claims.Operation)
+			return
+		}
+
+		if claims.Filesize <= 0 || claims.Filesize > 2<<26 { //Max 64 MB
+			slog.Error("Invalid file size", "file_size", claims.Filesize)
+		}
+	}
 }

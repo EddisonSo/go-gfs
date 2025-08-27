@@ -43,7 +43,6 @@ func (f *fanoutcoordinator) StartFanout(ctx context.Context, conn net.Conn, jwtT
 	slog.Info("Starting fanout", "replicas", f.replicas, "jwtLength", jwtLength)
 	
 	for i, replica := range f.replicas {
-		slog.Info("Creating forwarder", "replica", replica, "index", i)
 		forwarders[i] = forwarder.NewForwarder(replica, f.stagedchunk.OpId, f.stagedchunk.ChunkHandle)
 		go forwarders[i].StartForward()
 
