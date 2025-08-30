@@ -2,6 +2,7 @@ package csstructs
 
 import (
 	"github.com/golang-jwt/jwt/v5"
+	"errors"
 )
 
 type ChunkServerConfig struct {
@@ -28,13 +29,7 @@ type DownloadRequestClaims struct {
 	jwt.RegisteredClaims
 }
 
-type StageState int
-const (
-	Receiving StageState = iota
-	Staged
-	Applied
-	Aborted
-)
+
 
 type Action int
 const (
