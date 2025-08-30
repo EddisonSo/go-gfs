@@ -1,7 +1,6 @@
 package stagedchunk
 
 import (
-	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"io"
 	"bytes"
 	"sync"
@@ -10,17 +9,18 @@ import (
 type StagedChunk struct {
 	ChunkHandle string
 	OpId string
-	Status csstructs.StageState
 	buf []byte
 	pos int
 	mux sync.Mutex
 }
 
-func NewStagedChunk(chunkHandle string, opId string, status csstructs.StageState, size int64) *StagedChunk {
+func NewStagedChunk(chunkHandle string, opId string, size int64) *StagedChunk {
 	return &StagedChunk{
 		ChunkHandle: chunkHandle,
 		OpId: opId,
-		Status: status,
+		buf: make([]byte, 0, size),
+		pos: 0,
+		mux: sync.Mutex{},
 	}
 }
 
@@ -38,13 +38,21 @@ func (sc *StagedChunk) Read(p []byte) (int, error) {
 }
 
 func (sc *StagedChunk) NewReader() io.Reader {
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
 	return bytes.NewReader(sc.buf)
 }
 
 func (sc *StagedChunk) Bytes() []byte {
-	return sc.buf
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
+	cp := make([]byte, len(sc.buf))
+	copy(cp, sc.buf)
+	return cp
 }
 
 func (sc *StagedChunk) Len() int {
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
 	return len(sc.buf)
 }
