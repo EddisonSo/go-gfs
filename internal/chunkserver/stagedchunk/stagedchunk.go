@@ -14,7 +14,7 @@ type StagedChunk struct {
 	mux sync.Mutex
 }
 
-func NewStagedChunk(chunkHandle string, opId string, size int64) *StagedChunk {
+func NewStagedChunk(chunkHandle string, opId string, size uint64) *StagedChunk {
 	return &StagedChunk{
 		ChunkHandle: chunkHandle,
 		OpId: opId,
