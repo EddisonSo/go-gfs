@@ -2,7 +2,6 @@ package csstructs
 
 import (
 	"github.com/golang-jwt/jwt/v5"
-	"errors"
 )
 
 type ChunkServerConfig struct {
@@ -23,7 +22,7 @@ type ReplicaIdentifier struct {
 type DownloadRequestClaims struct {
 	ChunkHandle string `json:"chunk_handle"`
 	Operation string `json:"operation"`
-	Filesize int64 `json:"file_size"`
+	Filesize uint64 `json:"file_size"`
 	Replicas []ReplicaIdentifier `json:"replicas"`
 	Primary ReplicaIdentifier `json:"primary"`
 	jwt.RegisteredClaims
