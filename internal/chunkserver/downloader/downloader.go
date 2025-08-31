@@ -6,12 +6,15 @@ import (
 	"log/slog"
 	"net"
 	"os"
+
 	"github.com/google/uuid"
 
+	"eddisonso.com/go-gfs/internal/chunkserver/allocator"
+	"eddisonso.com/go-gfs/internal/chunkserver/allocatortrackingservice"
+	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/fanoutcoordinator"
 	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
-	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
 	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -91,19 +94,29 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	if claims.Filesize <= 0 || claims.Filesize > 2<<26 { //Max 64 MB
 		slog.Error("Invalid file size", "file_size", claims.Filesize)
 	}
+	
+	ats := allocatortrackingservice.GetAllocatorTrackingService()
+	var currAllocator *allocator.Allocator
+	if currAllocator , err = ats.GetAllocator(claims.ChunkHandle); err == nil {
+		currAllocator = allocator.NewAllocator(64<<20)
+	}
+	ctxAllocator := context.TODO()
+	opId := uuid.New().String()
+	currAllocator.Reserve(ctxAllocator, opId, claims.Filesize, 2)
+	ats.AddAllocator(claims.ChunkHandle, currAllocator)
 
 	stagedchunk := stagedchunk.NewStagedChunk(
 		claims.ChunkHandle,
-		uuid.New().String(),
-		csstructs.Receiving,
+		opId,
 		claims.Filesize,
 	)
+	
 	fds.ChunkStagingTrackingService.AddStagedChunk(stagedchunk)
 
-	ctx := context.TODO()
+	ctxFanout := context.TODO()
 
 	coordinator := fanoutcoordinator.NewFanoutCoordinator(claims.Replicas, stagedchunk)
 	coordinator.SetStagedChunk(stagedchunk)
 	coordinator.AddReplicas(claims.Replicas)
-	coordinator.StartFanout(ctx, conn, jwtTokenString)
+	coordinator.StartFanout(ctxFanout, conn, jwtTokenString)
 }

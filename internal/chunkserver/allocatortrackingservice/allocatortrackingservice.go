@@ -3,10 +3,15 @@ package allocatortrackingservice
 import (
 	"eddisonso.com/go-gfs/internal/chunkserver/allocator"
 	"sync"
+	"errors"
+)
+
+var (
+	ErrAllocatorNotFound = errors.New("Allocator not found")
 )
 
 type AllocatorTrackingService struct {
-	allocators map[string]*allocator.Allocator
+	allocators map[string]*allocator.Allocator //chunkHandle -> Allocator
 }
 
 var lock = &sync.Mutex{}
@@ -25,6 +30,13 @@ func GetAllocatorTrackingService() *AllocatorTrackingService {
 	return allocatorTrackingService
 }
 
-func (ats *AllocatorTrackingService) GetAllocator(opId string) *allocator.Allocator {
-	return ats.allocators[opId]
+func (ats *AllocatorTrackingService) GetAllocator(chunkHandle string) (*allocator.Allocator, error) {
+	if a, ok := ats.allocators[chunkHandle]; ok {
+		return a, nil
+	}
+	return nil, ErrAllocatorNotFound
+}
+
+func (ats *AllocatorTrackingService) AddAllocator(c string, a *allocator.Allocator) {
+	ats.allocators[c] = a
 }
