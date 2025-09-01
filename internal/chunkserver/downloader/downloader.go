@@ -113,10 +113,8 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	
 	fds.ChunkStagingTrackingService.AddStagedChunk(stagedchunk)
 
-	ctxFanout := context.TODO()
-
 	coordinator := fanoutcoordinator.NewFanoutCoordinator(claims.Replicas, stagedchunk)
 	coordinator.SetStagedChunk(stagedchunk)
 	coordinator.AddReplicas(claims.Replicas)
-	coordinator.StartFanout(ctxFanout, conn, jwtTokenString)
+	coordinator.StartFanout(conn, jwtTokenString)
 }
