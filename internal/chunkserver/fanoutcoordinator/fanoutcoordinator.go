@@ -1,12 +1,10 @@
 package fanoutcoordinator
 
 import (
-	"context"
 	"encoding/binary"
 	"io"
 	"log/slog"
 	"net"
-
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/forwarder"
 	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
@@ -33,7 +31,7 @@ func (f *fanoutcoordinator) SetStagedChunk(stagedchunk *stagedchunk.StagedChunk)
 	f.stagedchunk = stagedchunk
 }
 
-func (f *fanoutcoordinator) StartFanout(ctx context.Context, conn net.Conn, jwtTokenString string) error {
+func (f *fanoutcoordinator) StartFanout(conn net.Conn, jwtTokenString string) error {
 	forwarders := make([]*forwarder.Forwarder, len(f.replicas))
 
 	jwtLength := len(jwtTokenString)
