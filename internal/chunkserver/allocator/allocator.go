@@ -76,6 +76,9 @@ func NewAllocator(capacity uint64) *Allocator {
 func (a *Allocator) Reserve(ctx context.Context, opID string, length uint64, needAcks int) (uint64, error) {
 	respCh := make(chan ReserveResp, 1) 
 	req := ReserveReq{OpID: opID, Length: length, NeedAcks: needAcks, Resp: respCh}
+	if a == nil { panic("a is nil") }
+	if a.requests == nil { panic("a.requests is nil") }
+
 	select {
 	case a.requests <- req:
 	case <-ctx.Done():
