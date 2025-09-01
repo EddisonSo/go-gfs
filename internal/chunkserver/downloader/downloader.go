@@ -96,10 +96,12 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	}
 	
 	ats := allocatortrackingservice.GetAllocatorTrackingService()
-	var currAllocator *allocator.Allocator
-	if currAllocator , err = ats.GetAllocator(claims.ChunkHandle); err == nil {
-		currAllocator = allocator.NewAllocator(64<<20)
+	currAllocator, err := ats.GetAllocator(claims.ChunkHandle)
+	if err != nil {
+		currAllocator = allocator.NewAllocator(64 << 20)
+		ats.AddAllocator(claims.ChunkHandle, currAllocator)
 	}
+
 	ctxAllocator := context.TODO()
 	opId := uuid.New().String()
 	currAllocator.Reserve(ctxAllocator, opId, claims.Filesize, 2)
