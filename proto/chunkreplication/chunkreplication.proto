@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package chunkreplication.v1;
+option go_package = "eddisonso.com/go-gfs/proto/chunkreplication;chunkreplication";
+
+message ReplicationRequest {
+    string opId = 1;
+    string chunkHandle = 2;
+    int64 length = 3;
+}

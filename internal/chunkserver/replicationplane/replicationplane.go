@@ -77,7 +77,7 @@ func (rp *ReplicationPlane) handleReplication(conn net.Conn) {
 		return
 	}
 	
-	slog.Info("Replication: Received replication request", "chunkHandle", msg.GetChunkHandle(), "opId", msg.GetOpId(), "length", msg.GetLength())
+	slog.Info("Replication: Received replication request", "chunkHandle", msg.GetChunkHandle(), "opId", msg.GetOpId(), "bytes", msg.GetReplicationBytes())
 }
 
 func (rp *ReplicationPlane) Start() {
