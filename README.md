@@ -28,11 +28,6 @@ It provides a **master** for metadata management, **chunkservers** for data stor
 - Master re-replicates missing or corrupted chunks in the background.
 - Replicas truncate to last valid checksum on crash recovery.
 
-## Integrity
-- Per-block checksums (default 64KB).
-- Periodic replica audits to detect corruption.
-- On mismatch, a replica is repaired from a healthy peer.
-
 ## Supported Operations
 - **Create/Delete File**
 - **Append to File**
