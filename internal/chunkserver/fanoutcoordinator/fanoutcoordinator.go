@@ -38,7 +38,7 @@ func (f *fanoutcoordinator) StartFanout(conn net.Conn, jwtTokenString string) er
 	lengthBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(lengthBytes, uint32(jwtLength))
 
-	slog.Info("Starting fanout", "replicas", f.replicas, "jwtLength", jwtLength)
+	slog.Info("Starting fanout", "replicas", f.replicas)
 	
 	for i, replica := range f.replicas {
 		forwarders[i] = forwarder.NewForwarder(replica, f.stagedchunk.OpId, f.stagedchunk.ChunkHandle)
