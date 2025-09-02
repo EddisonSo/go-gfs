@@ -6,11 +6,11 @@ import (
 	"net"
 	"strconv"
 	"sync"
-	"github.com/golang-jwt/jwt/v5"
 
 	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
-	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
+	"google.golang.org/protobuf/proto"
+	pb "eddisonso.com/go-gfs/gen/chunkreplication"
 )
 
 type ReplicationPlane struct {
@@ -42,6 +42,44 @@ func NewReplicationPlane(config csstructs.ChunkServerConfig) *ReplicationPlane {
 	return instance
 }
 
+func (rp *ReplicationPlane) handleReplication(conn net.Conn) {
+	defer conn.Close()
+
+	lengthBytes := make([]byte, 4)
+	n, err := conn.Read(lengthBytes)
+	if err != nil {
+		slog.Error("Replication: Failed to read replication msg length", "error", err)
+		return
+	}
+
+	if n != 4 {
+		slog.Error("Replication: Invalid replication msg length", "bytes_read", n)
+		return
+	}
+
+	msgLength := binary.BigEndian.Uint32(lengthBytes)
+	msgBytes := make([]byte, msgLength)
+
+	n, err = conn.Read(msgBytes)
+	if err != nil {
+		slog.Error("Replication: Failed to read replication msg", "error", err)
+		return
+	}
+	if n != int(msgLength) {
+		slog.Error("Replication: Invalid replication msg length", "expected", msgLength, "bytes_read", n)
+		return
+	}
+
+	var msg pb.ReplicationRequest
+	err = proto.Unmarshal(msgBytes, &msg)
+	if err != nil {
+		slog.Error("Replication: Failed to unmarshal replication msg", "error", err)
+		return
+	}
+	
+	slog.Info("Replication: Received replication request", "chunkHandle", msg.GetChunkHandle(), "opId", msg.GetOpId(), "length", msg.GetLength())
+}
+
 func (rp *ReplicationPlane) Start() {
 	ln, err := net.Listen("tcp", rp.Config.Hostname + ":" + strconv.Itoa(rp.Config.ReplicationPort))
 	if err != nil {
@@ -56,49 +94,9 @@ func (rp *ReplicationPlane) Start() {
 			slog.Error("Replication: Failed to accept connection", "error", err)
 			continue
 		}
-		defer conn.Close()
+
+		go rp.handleReplication(conn)
 
 		slog.Info("Replication: New connection established", "remote_addr", conn.RemoteAddr().String())
-		buf := make([]byte, 4)
-
-		n, err := conn.Read(buf)
-		if err != nil || n != 4 {
-			slog.Error("Replication: Failed to read action from connection", "error", err)
-			continue
-		}
-
-		tokenLength := binary.BigEndian.Uint32(buf)
-		jwtToken := make([]byte, tokenLength)
-		n, err = conn.Read(jwtToken)
-		if err != nil || n != int(tokenLength) {
-			slog.Error("Replication: Failed to read JWT token", "error", err, "expected_length", tokenLength, "actual_length", n)
-			continue
-		}
-
-		slog.Info("Replication: Received JWT token", "token", jwtToken)
-		jwtTokenStr := string(jwtToken)
-		
-		token, err := jwt.ParseWithClaims(jwtTokenStr, &csstructs.DownloadRequestClaims{}, secrets.GetSecret)
-
-		if err != nil {
-			slog.Error("Failed to parse JWT token", "error", err)
-			return
-		}
-
-		claims, ok := token.Claims.(*csstructs.DownloadRequestClaims)
-		if !ok || !token.Valid {
-			slog.Error("Invalid JWT token")
-			return
-		}
-
-		slog.Info("Replication: Replication request", "chunk_handle", claims.ChunkHandle, "operation", claims.Operation)
-		if claims.Operation != "download" {
-			slog.Error("Invalid operation", "operation", claims.Operation)
-			return
-		}
-
-		if claims.Filesize <= 0 || claims.Filesize > 2<<26 { //Max 64 MB
-			slog.Error("Invalid file size", "file_size", claims.Filesize)
-		}
 	}
 }
