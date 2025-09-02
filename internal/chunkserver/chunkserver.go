@@ -18,7 +18,7 @@ func NewChunkServer(config csstructs.ChunkServerConfig) *ChunkServer {
 
 func (cs *ChunkServer) Start() {
 	dataPlane := dataplane.NewDataPlane(cs.config)
-	replicationPlane := replicationplane.NewReplicationPlane(cs.config)
+	replicationPlane := replicationplane.NewReplicationServer(cs.config)
 	go dataPlane.Start()
 	replicationPlane.Start()
 }
