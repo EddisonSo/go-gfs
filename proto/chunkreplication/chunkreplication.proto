@@ -3,28 +3,25 @@ syntax = "proto3";
 package chunkreplication.v1;
 option go_package = "eddisonso.com/go-gfs/proto/chunkreplication;chunkreplication";
 
-message ReplicationRequest {
-    string opId = 1;
+message ReplicationMetadata {
+    string opId        = 1;
     string chunkHandle = 2;
-    int64 length = 3;
-    int64 epoch = 4;
+    int64  length      = 3;
+    int64  epoch       = 4;
 }
 
-message Chunk {
-    bytes chunk = 1;
+message ReplicationData {
+    bytes  data   = 1;
+    uint64 seq    = 2;
 }
 
-message ReplicationResponse {
-    bool success   = 1;
-    string message = 2;
+message ReplicationFrame {
+    oneof kind {
+        ReplicationOpen meta = 1;
+	ReplicationData data = 2;
+    }
 }
 
 service Replicator {
-    // Simple unary RPC (send request, get response)
-    rpc Replicate (ReplicationRequest) returns (ReplicationResponse);
-
-    // Or a streaming RPC if you're sending chunk data
-    rpc StreamReplicate (stream Chunk) returns (ReplicationResponse);
+    rpc Replicate (stream ReplicationFrame) returns (ReplicationResponse);
 }
-
-
