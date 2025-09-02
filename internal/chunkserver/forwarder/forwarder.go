@@ -38,7 +38,6 @@ func (f *Forwarder) StartForward() error {
 		return err
 	}
 	defer replicaConn.Close()
-	slog.Info("Connected to replica", "replica", f.replica.Hostname + ":" + strconv.Itoa(f.replica.ReplicationPort))
 
 	_, err = io.Copy(replicaConn, f.Pr)
 	if err != nil {
