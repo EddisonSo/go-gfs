@@ -17,9 +17,14 @@ message ReplicationData {
 
 message ReplicationFrame {
     oneof kind {
-        ReplicationOpen meta = 1;
+        ReplicationMetadata meta = 1;
 	ReplicationData data = 2;
     }
+}
+
+message ReplicationResponse {
+    bool success = 1;
+    string message = 2;
 }
 
 service Replicator {
