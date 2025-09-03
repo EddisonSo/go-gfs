@@ -43,9 +43,6 @@ func (f *fanoutcoordinator) StartFanout(conn net.Conn, jwtTokenString string) er
 	for i, replica := range f.replicas {
 		forwarders[i] = forwarder.NewForwarder(replica, f.stagedchunk.OpId, f.stagedchunk.ChunkHandle)
 		go forwarders[i].StartForward()
-
-		forwarders[i].Pw.Write(lengthBytes)
-		forwarders[i].Pw.Write([]byte(jwtTokenString))
 	}
 
 	buf := make([]byte, 64<<10)
