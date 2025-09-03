@@ -3,10 +3,11 @@ package forwarder
 import (
 	"io"
 	"log/slog"
-	"net"
 	"strconv"
 
+	"eddisonso.com/go-gfs/gen/chunkreplication"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
+	"google.golang.org/grpc"
 )
 
 type Forwarder struct {
@@ -15,10 +16,10 @@ type Forwarder struct {
 	chunkHandle string
 	Pr *io.PipeReader
 	Pw *io.PipeWriter
-	idx int
+	bufSize int64
 }
 
-func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle string) *Forwarder {
+func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle string, bufSize int64) *Forwarder {
 	pr, pw := io.Pipe()
 	return &Forwarder{
 		replica: replica,
@@ -26,23 +27,39 @@ func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle 
 		chunkHandle: chunkHandle,
 		Pr: pr,
 		Pw: pw,
-		idx: 0,
+		bufSize: bufSize,
 	}
 }
 
 func (f *Forwarder) StartForward() error {
 	slog.Info("Starting forwarder", "replica", f.replica.Hostname, "opId", f.OpId, "chunkHandle", f.chunkHandle)
-	replicaConn, err := net.Dial("tcp", f.replica.Hostname + ":" + strconv.Itoa(f.replica.ReplicationPort))
-	if err != nil {
-		slog.Error("Failed to connect to replica", "replica", f.replica.Hostname + ":" + strconv.Itoa(f.replica.ReplicationPort),"error", err)
-		return err
-	}
-	defer replicaConn.Close()
 
-	_, err = io.Copy(replicaConn, f.Pr)
+	conn, err := grpc.NewClient(f.replica.Hostname + ":" + strconv.Itoa(f.replica.ReplicationPort))
 	if err != nil {
-		slog.Error("Failed to forward data", "replica",  f.replica.Hostname + ":" + strconv.Itoa(f.replica.ReplicationPort),"error", err)
 		return err
 	}
-	return nil
+	defer conn.Close()
+	client := chunkreplication.NewReplicatorClient(conn)
+
+	buffer := make([]byte, f.bufSize)
+	have := int64(0)
+
+	for {
+		n, err := f.Pr.Read(buffer[have:f.bufSize])
+		if err != nil {
+			if err == io.EOF {
+				slog.Info("Forwarder reached EOF", "replica", f.replica.Hostname, "opId", f.OpId, "chunkHandle", f.chunkHandle)
+				return nil
+			}
+			slog.Error("Error reading from pipe", "error", err, "replica", f.replica.Hostname, "opId", f.OpId, "chunkHandle", f.chunkHandle)
+			return err
+		}
+
+		have += int64(n)
+		if have == f.bufSize {
+			//flush
+		}
+
+
+	}
 }
