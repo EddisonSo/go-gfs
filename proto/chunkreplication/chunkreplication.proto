@@ -6,8 +6,8 @@ option go_package = "eddisonso.com/go-gfs/proto/chunkreplication;chunkreplicatio
 message ReplicationMetadata {
     string opId        = 1;
     string chunkHandle = 2;
-    int64  length      = 3;
-    int64  epoch       = 4;
+    uint64  length      = 3;
+    uint64  epoch       = 4;
 }
 
 message ReplicationData {
