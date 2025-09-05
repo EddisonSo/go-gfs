@@ -51,8 +51,8 @@ func (sc *StagedChunk) Bytes() []byte {
 	return cp
 }
 
-func (sc *StagedChunk) Len() int {
+func (sc *StagedChunk) Len() uint64 {
 	sc.mux.Lock()
 	defer sc.mux.Unlock()
-	return len(sc.buf)
+	return uint64(len(sc.buf))
 }
