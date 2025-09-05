@@ -1,7 +1,6 @@
 package fanoutcoordinator
 
 import (
-	"encoding/binary"
 	"io"
 	"log/slog"
 	"net"
@@ -34,14 +33,10 @@ func (f *fanoutcoordinator) SetStagedChunk(stagedchunk *stagedchunk.StagedChunk)
 func (f *fanoutcoordinator) StartFanout(conn net.Conn, jwtTokenString string) error {
 	forwarders := make([]*forwarder.Forwarder, len(f.replicas))
 
-	jwtLength := len(jwtTokenString)
-	lengthBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(lengthBytes, uint32(jwtLength))
-
 	slog.Info("Starting fanout", "replicas", f.replicas)
 	
 	for i, replica := range f.replicas {
-		forwarders[i] = forwarder.NewForwarder(replica, f.stagedchunk.OpId, f.stagedchunk.ChunkHandle)
+		forwarders[i] = forwarder.NewForwarder(replica, f.stagedchunk.OpId, f.stagedchunk.ChunkHandle, f.stagedchunk.Len())
 		go forwarders[i].StartForward()
 	}
 
