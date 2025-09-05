@@ -3,9 +3,10 @@ package forwarder
 import (
 	"io"
 	"log/slog"
+	"errors"
 	"strconv"
 
-	"eddisonso.com/go-gfs/gen/chunkreplication"
+	pb "eddisonso.com/go-gfs/gen/chunkreplication"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"google.golang.org/grpc"
 )
@@ -16,10 +17,10 @@ type Forwarder struct {
 	chunkHandle string
 	Pr *io.PipeReader
 	Pw *io.PipeWriter
-	bufSize int64
+	chunkSize uint64
 }
 
-func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle string, bufSize int64) *Forwarder {
+func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle string, chunkSize uint64) *Forwarder {
 	pr, pw := io.Pipe()
 	return &Forwarder{
 		replica: replica,
@@ -27,7 +28,7 @@ func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle 
 		chunkHandle: chunkHandle,
 		Pr: pr,
 		Pw: pw,
-		bufSize: bufSize,
+		chunkSize: chunkSize,
 	}
 }
 
@@ -39,27 +40,71 @@ func (f *Forwarder) StartForward() error {
 		return err
 	}
 	defer conn.Close()
-	client := chunkreplication.NewReplicatorClient(conn)
+	client := pb.NewReplicatorClient(conn)
 
-	buffer := make([]byte, f.bufSize)
-	have := int64(0)
+	stream, err := client.Replicate(nil)
+	if err != nil {
+		return err
+	}
+
+	meta := &pb.ReplicationMetadata{
+		OpId: f.OpId,
+		ChunkHandle: f.chunkHandle,
+		Length: f.chunkSize,
+		Epoch: 1,
+	}
+
+
+	err = stream.Send(&pb.ReplicationFrame{
+		Kind: &pb.ReplicationFrame_Meta{Meta: meta},
+	})
+
+	if err != nil {
+		return err
+	}
+	
+	buf := make([]byte, 1 << 20)
+	var currBytes uint64 = 0
+	var totalBytes uint64 = 0
 
 	for {
-		n, err := f.Pr.Read(buffer[have:f.bufSize])
-		if err != nil {
-			if err == io.EOF {
-				slog.Info("Forwarder reached EOF", "replica", f.replica.Hostname, "opId", f.OpId, "chunkHandle", f.chunkHandle)
-				return nil
+		n, err := f.Pr.Read(buf)
+		totalBytes += uint64(n)
+		currBytes += uint64(n)
+
+		if err == io.EOF {
+			if totalBytes != f.chunkSize {
+				return errors.New("forwarder: read less bytes than expected: " + strconv.FormatUint(currBytes, 10) + " < " + strconv.FormatUint(f.chunkSize, 10))
 			}
-			slog.Error("Error reading from pipe", "error", err, "replica", f.replica.Hostname, "opId", f.OpId, "chunkHandle", f.chunkHandle)
+			if currBytes > 0 {
+				replicationData := pb.ReplicationData{Data: buf, Seq: 0}
+				err = stream.Send(&pb.ReplicationFrame{
+					Kind: &pb.ReplicationFrame_Data{Data: &replicationData},
+				})
+
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		if err != nil {
 			return err
 		}
 
-		have += int64(n)
-		if have == f.bufSize {
-			//flush
+		if currBytes == f.chunkSize {
+			replicationData := pb.ReplicationData{Data: buf, Seq: 0}
+			err = stream.Send(&pb.ReplicationFrame{
+				Kind: &pb.ReplicationFrame_Data{Data: &replicationData},
+			})
+
+			if err != nil {
+				return err
+			}
+
+			currBytes = 0
+			buf = make([]byte, 1 << 20)
 		}
-
-
 	}
 }
