@@ -14,7 +14,7 @@ It provides a **master** for metadata management, **chunkservers** for data stor
 1. **Client → Master:** Request chunk locations for file append.
 2. **Client → Replicas:** Send data (staged as `READY`).
 3. **Sequencer (primary or gateway):** Assigns order, offset, and sequence number.
-4. **Commit:** After quorum (`2/3`) replicas confirm `READY`, sequencer issues `COMMIT`.
+4. **Commit:** After quorum (`2/3`) replicas confirm `READY`, primary issues `COMMIT`.
 5. **Ack:** Client receives final offset.
 
 ## Read Path
