@@ -4,6 +4,7 @@ import (
 	"net"
 	"strconv"
 	"google.golang.org/grpc"
+	"log/slog"
 	pb "eddisonso.com/go-gfs/gen/chunkreplication"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 )
@@ -20,6 +21,7 @@ func NewReplicationServer(config csstructs.ChunkServerConfig) *ReplicationServer
 
 func (rs *ReplicationServer) Start() {
 	lis, _ := net.Listen("tcp", ":" + strconv.Itoa(rs.config.ReplicationPort))
+	slog.Info("Starting Replication Server on port " + strconv.Itoa(rs.config.ReplicationPort))
 	grpcServer := grpc.NewServer()
 	pb.RegisterReplicatorServer(grpcServer, &ReplicationPlane{})
 	grpcServer.Serve(lis)
