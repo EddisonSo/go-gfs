@@ -1,7 +1,6 @@
 package downloader
 
 import (
-	"context"
 	"encoding/binary"
 	"log/slog"
 	"net"
@@ -102,9 +101,8 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		ats.AddAllocator(claims.ChunkHandle, currAllocator)
 	}
 
-	ctxAllocator := context.TODO()
 	opId := uuid.New().String()
-	currAllocator.Reserve(ctxAllocator, opId, claims.Filesize, 2)
+	currAllocator.Allocate(claims.Filesize)
 	ats.AddAllocator(claims.ChunkHandle, currAllocator)
 
 	stagedchunk := stagedchunk.NewStagedChunk(
