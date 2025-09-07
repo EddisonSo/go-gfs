@@ -4,16 +4,12 @@ import (
 	"errors"
 )
 
-type StageState int
-const (
-	StageReserved StageState = iota
-	StageReady
-	StageCommitted
-	StageAborted
-	StageSealed
-)
+type Chunkallocation struct {
+	Chunkhandle string
+	CurrOffset uint64
+}
+
 
 var (
-	ErrChunkFull = errors.New("chunk is full")
-	ErrNotFound  = errors.New("item not found")
+	ErrInsufficientSpace = errors.New("Insufficient space in chunk")
 )
