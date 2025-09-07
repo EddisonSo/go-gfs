@@ -42,7 +42,7 @@ func main() {
 	claims := csstructs.DownloadRequestClaims{
 		ChunkHandle: "1234",
 		Operation: "download",
-		Filesize: 5,
+		Filesize: 4,
 		Replicas: []csstructs.ReplicaIdentifier{r2},
 		Primary: primary,
 	}
