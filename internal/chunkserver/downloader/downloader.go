@@ -85,7 +85,7 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		return
 	}
 
-	slog.Info("Download request", "chunk_handle", claims.ChunkHandle, "operation", claims.Operation)
+	slog.Info("Download request", "chunk_handle", claims.ChunkHandle, "operation", claims.Operation, "filesize", claims.Filesize)
 	if claims.Operation != "download" {
 		slog.Error("Invalid operation", "operation", claims.Operation)
 		return
@@ -112,7 +112,7 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		opId,
 		claims.Filesize,
 	)
-	
+
 	fds.ChunkStagingTrackingService.AddStagedChunk(stagedchunk)
 
 	coordinator := fanoutcoordinator.NewFanoutCoordinator(claims.Replicas, stagedchunk)

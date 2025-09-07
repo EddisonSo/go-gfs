@@ -36,7 +36,7 @@ func (f *fanoutcoordinator) StartFanout(conn net.Conn, jwtTokenString string) er
 	slog.Info("Starting fanout", "replicas", f.replicas)
 	
 	for i, replica := range f.replicas {
-		forwarders[i] = forwarder.NewForwarder(replica, f.stagedchunk.OpId, f.stagedchunk.ChunkHandle, f.stagedchunk.Len())
+		forwarders[i] = forwarder.NewForwarder(replica, f.stagedchunk.OpId, f.stagedchunk.ChunkHandle, f.stagedchunk.Cap())
 		go forwarders[i].StartForward()
 	}
 
@@ -46,7 +46,7 @@ func (f *fanoutcoordinator) StartFanout(conn net.Conn, jwtTokenString string) er
 		n, err := conn.Read(buf)
 		if n > 0 {
 			total += n
-			f.stagedchunk.Read(buf[:n])
+			f.stagedchunk.Write(buf[:n])
 
 			for _, fw := range forwarders {
 				fw.Pw.Write(buf[:n])
