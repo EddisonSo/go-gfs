@@ -1,12 +1,13 @@
 package replicationplane
 
 import (
-	"io"
 	"errors"
+	"io"
+	"log/slog"
 
 	pb "eddisonso.com/go-gfs/gen/chunkreplication"
-	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
 	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
+	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
 )
 
 type ReplicationPlane struct {
@@ -22,11 +23,12 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 	for {
 		frame, err := stream.Recv()
 		if err == io.EOF {
-			// finalize / success response
 			msg := "replication accepted"
 			if chunkHandle != "" {
 				msg += " for " + chunkHandle
 			}
+
+			slog.Info("replication complete", "chunkHandle", chunkHandle, "opID", opID, "length", length)
 			return stream.SendAndClose(&pb.ReplicationResponse{
 				Success: true,
 				Message: msg,
@@ -35,22 +37,29 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 
 		switch v := frame.GetKind().(type) {
 		case *pb.ReplicationFrame_Meta:
+			slog.Info(frame.String())
 			meta := v.Meta
 			chunkHandle = meta.GetChunkHandle()
 			opID = meta.GetOpId()
 			length = meta.GetLength()
 
+			slog.Info("starting replication", "chunkHandle", chunkHandle, "opID", opID, "length", length)
+
 			sc = stagedchunk.NewStagedChunk(chunkHandle, opID, length)
 			chunkstagingtrackingservice.GetChunkStagingTrackingService().AddStagedChunk(sc)
-
 		case *pb.ReplicationFrame_Data:
 			if sc == nil {
 				return errors.New("DATA before META")
 			}
 
 			data := v.Data.GetData()
-			sc.Read(data)
+			_, err := sc.Write(data)
+			if err != nil {
+				slog.Error("error writing data to staged chunk", "chunkHandle", chunkHandle, "opID", opID, "error", err)
+				return err
+			}
 		default:
+			slog.Info("unknown replication frame kind", "chunkHandle", chunkHandle, "opID", opID)
 			return errors.New("unknown frame kind")
 		}
 	}
