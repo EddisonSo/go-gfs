@@ -19,6 +19,7 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 	var sc *stagedchunk.StagedChunk
 	var chunkHandle, opID string
 	var length uint64
+	var offset uint64
 
 	for {
 		frame, err := stream.Recv()
@@ -42,10 +43,11 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 			chunkHandle = meta.GetChunkHandle()
 			opID = meta.GetOpId()
 			length = meta.GetLength()
+			offset = meta.GetOffset()
 
-			slog.Info("starting replication", "chunkHandle", chunkHandle, "opID", opID, "length", length)
+			slog.Info("starting replication", "chunkHandle", chunkHandle, "opID", opID, "length", length, "offset", offset)
 
-			sc = stagedchunk.NewStagedChunk(chunkHandle, opID, length)
+			sc = stagedchunk.NewStagedChunk(chunkHandle, opID, length, offset)
 			chunkstagingtrackingservice.GetChunkStagingTrackingService().AddStagedChunk(sc)
 		case *pb.ReplicationFrame_Data:
 			if sc == nil {

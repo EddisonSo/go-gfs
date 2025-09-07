@@ -12,15 +12,17 @@ type StagedChunk struct {
 	buf []byte
 	pos int
 	mux sync.Mutex
+	Offset uint64
 }
 
-func NewStagedChunk(chunkHandle string, opId string, size uint64) *StagedChunk {
+func NewStagedChunk(chunkHandle string, opId string, size uint64, offset uint64) *StagedChunk {
 	return &StagedChunk{
 		ChunkHandle: chunkHandle,
 		OpId: opId,
 		buf: make([]byte, size),
 		pos: 0,
 		mux: sync.Mutex{},
+		Offset: offset,
 	}
 }
 
