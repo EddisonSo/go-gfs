@@ -102,13 +102,17 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	}
 
 	opId := uuid.New().String()
-	currAllocator.Allocate(claims.Filesize)
-	ats.AddAllocator(claims.ChunkHandle, currAllocator)
+	offset, err := currAllocator.Allocate(claims.Filesize)
+	if err != nil {
+		slog.Error("Failed to allocate space for chunk", "error", err)
+		return
+	}
 
 	stagedchunk := stagedchunk.NewStagedChunk(
 		claims.ChunkHandle,
 		opId,
 		claims.Filesize,
+		offset,
 	)
 
 	fds.ChunkStagingTrackingService.AddStagedChunk(stagedchunk)

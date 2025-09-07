@@ -4,15 +4,16 @@ package chunkreplication.v1;
 option go_package = "eddisonso.com/go-gfs/proto/chunkreplication;chunkreplication";
 
 message ReplicationMetadata {
-    string opId        = 1;
+    string opId = 1;
     string chunkHandle = 2;
-    uint64  length      = 3;
-    uint64  epoch       = 4;
+    uint64 length = 3;
+    uint64 epoch = 4;
+    uint64 offset = 5;
 }
 
 message ReplicationData {
-    bytes  data   = 1;
-    uint64 seq    = 2;
+    bytes  data = 1;
+    uint64 seq = 2;
 }
 
 message ReplicationFrame {
