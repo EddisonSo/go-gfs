@@ -9,6 +9,7 @@ import (
 
 	pb "eddisonso.com/go-gfs/gen/chunkreplication"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
+	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -17,19 +18,21 @@ type Forwarder struct {
 	replica csstructs.ReplicaIdentifier
 	opId string
 	chunkHandle string
+	stagedchunk *stagedchunk.StagedChunk
 	Lr *io.LimitedReader
 	Pw *io.PipeWriter
 	chunkSize uint64
 	offset uint64
 }
 
-func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle string, chunkSize uint64, offset uint64) *Forwarder {
+func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle string, stagedchunk *stagedchunk.StagedChunk, chunkSize uint64, offset uint64) *Forwarder {
 	pr, pw := io.Pipe()
 	lr := io.LimitedReader{R:pr, N:int64(chunkSize)}
 	return &Forwarder{
 		replica: replica,
 		opId: opId,
 		chunkHandle: chunkHandle,
+		stagedchunk: stagedchunk,
 		Lr: &lr,
 		Pw: pw,
 		chunkSize: chunkSize,
@@ -102,6 +105,7 @@ func (f *Forwarder) StartForward() error {
 				slog.Info("Finished data transfer to replica", "replica", f.replica.Hostname, "opId", f.opId, "chunkHandle", f.chunkHandle, "n", n, "totalBytes", totalBytes)
 			}
 			stream.CloseAndRecv()
+			f.stagedchunk.Ready()
 			return nil
 		}
 
