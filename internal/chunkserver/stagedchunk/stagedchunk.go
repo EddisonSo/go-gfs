@@ -4,6 +4,7 @@ import (
 	"io"
 	"bytes"
 	"sync"
+	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 )
 
 type StagedChunk struct {
@@ -13,6 +14,8 @@ type StagedChunk struct {
 	pos int
 	mux sync.Mutex
 	Offset uint64
+	Status csstructs.Status
+	ready uint8
 }
 
 func NewStagedChunk(chunkHandle string, opId string, size uint64, offset uint64) *StagedChunk {
@@ -23,6 +26,8 @@ func NewStagedChunk(chunkHandle string, opId string, size uint64, offset uint64)
 		pos: 0,
 		mux: sync.Mutex{},
 		Offset: offset,
+		Status: csstructs.READY,
+		ready: 0,
 	}
 }
 
@@ -65,4 +70,19 @@ func (sc *StagedChunk) Cap() uint64 {
 
 func (sc *StagedChunk) Pos() uint64 {
 	return uint64(sc.pos)
+}
+
+func (sc *StagedChunk) Commit() error {
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
+
+	//TODO: finish writing to disk
+	return nil
+}
+
+func (sc *StagedChunk) Ready() {
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
+
+	sc.ready += 1
 }

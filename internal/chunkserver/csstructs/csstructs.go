@@ -35,3 +35,10 @@ const (
 	Download Action = iota
 	Upload
 )
+
+type Status int
+const (
+	READY Status = iota
+	COMMIT
+	ABORT
+)
