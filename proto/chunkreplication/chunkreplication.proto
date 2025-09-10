@@ -28,6 +28,17 @@ message ReplicationResponse {
     string message = 2;
 }
 
+message Ready {
+    string opId = 1;
+    string replica = 2;
+}
+
+message Commit {
+    string opId = 1;
+}
+
 service Replicator {
     rpc Replicate (stream ReplicationFrame) returns (ReplicationResponse);
+    rpc Ready (Ready) returns (ReplicationResponse);
+    rpc Commit (Commit) returns (ReplicationResponse);
 }

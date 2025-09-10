@@ -66,3 +66,7 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 		}
 	}
 }
+
+func (rp *ReplicationPlane) RecvReady(stream pb.Replicator_ReplicateServer) error {
+    return nil
+}
