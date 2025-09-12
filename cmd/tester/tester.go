@@ -24,6 +24,13 @@ func main() {
 		ReplicationPort: 8081,
 	}
 
+	r3 := csstructs.ReplicaIdentifier{
+		ID: "replica3",
+		Hostname: "chunkserver3",
+		DataPort: 8080,
+		ReplicationPort: 8081,
+	}
+
 	conn, err := net.Dial("tcp", primary.Hostname + ":" + fmt.Sprint(primary.DataPort))
 	if err != nil {
 		panic(err)
@@ -43,7 +50,7 @@ func main() {
 		ChunkHandle: "1234",
 		Operation: "download",
 		Filesize: 4,
-		Replicas: []csstructs.ReplicaIdentifier{r2},
+		Replicas: []csstructs.ReplicaIdentifier{r2, r3},
 		Primary: primary,
 	}
     
