@@ -17,4 +17,13 @@ services:
     ports:
       - "8082:8080"
       - "8083:8081"
+  chunkserver3:
+    image: gfs-chunkserver
+    container_name: chunkserver3
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8084:8080"
+      - "8085:8081"
 
