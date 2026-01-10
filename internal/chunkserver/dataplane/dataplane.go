@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"encoding/binary"
 	"eddisonso.com/go-gfs/internal/chunkserver/downloader"
+	"eddisonso.com/go-gfs/internal/chunkserver/uploader"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 )
 
@@ -31,7 +32,9 @@ func (cs *DataPlane) Start() {
 		return
 	}
 
-	slog.Info("FileDownloadService is listening", "address", cs.config.Hostname + ":" + strconv.Itoa(cs.config.DataPort))
+	uploader := uploader.NewFileUploadService(cs.config)
+
+	slog.Info("DataPlane is listening", "address", cs.config.Hostname + ":" + strconv.Itoa(cs.config.DataPort))
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -44,14 +47,16 @@ func (cs *DataPlane) Start() {
 		n, err := conn.Read(buf)
 		if err != nil || n != 4 {
 			slog.Error("Failed to read action from connection", "error", err)
-			return
+			conn.Close()
+			continue
 		}
 
 		action := csstructs.Action(binary.BigEndian.Uint32(buf))
 		switch action {
-			case csstructs.Download:
-				go downloader.HandleDownload(conn)
-				
+		case csstructs.Download:
+			go downloader.HandleDownload(conn)
+		case csstructs.Upload:
+			go uploader.HandleUpload(conn)
 		}
 	}
 }

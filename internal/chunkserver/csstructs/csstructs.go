@@ -42,3 +42,16 @@ const (
 	COMMIT
 	ABORT
 )
+
+type UploadRequestClaims struct {
+	ChunkHandle string `json:"chunk_handle"`
+	Operation   string `json:"operation"`
+	jwt.RegisteredClaims
+}
+
+type ReadErrorCode uint32
+const (
+	ErrChunkNotFound ReadErrorCode = iota + 1
+	ErrReadFailure
+	ErrInvalidRequest
+)
