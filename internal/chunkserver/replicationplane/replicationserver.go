@@ -23,6 +23,6 @@ func (rs *ReplicationServer) Start() {
 	lis, _ := net.Listen("tcp", ":" + strconv.Itoa(rs.config.ReplicationPort))
 	slog.Info("Starting Replication Server on port " + strconv.Itoa(rs.config.ReplicationPort))
 	grpcServer := grpc.NewServer()
-	pb.RegisterReplicatorServer(grpcServer, &ReplicationPlane{})
+	pb.RegisterReplicatorServer(grpcServer, NewReplicationPlane(rs.config))
 	grpcServer.Serve(lis)
 }

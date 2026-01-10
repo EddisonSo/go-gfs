@@ -2,9 +2,11 @@ package downloader
 
 import (
 	"encoding/binary"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -13,6 +15,7 @@ import (
 	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/fanoutcoordinator"
+	"eddisonso.com/go-gfs/internal/chunkserver/replicationclient"
 	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
 	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
 	"github.com/golang-jwt/jwt/v5"
@@ -113,6 +116,7 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		opId,
 		claims.Filesize,
 		offset,
+		fds.ChunkServerConfig.Dir,
 	)
 
 	fds.ChunkStagingTrackingService.AddStagedChunk(stagedchunk)
@@ -120,5 +124,84 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	coordinator := fanoutcoordinator.NewFanoutCoordinator(claims.Replicas, stagedchunk)
 	coordinator.SetStagedChunk(stagedchunk)
 	coordinator.AddReplicas(claims.Replicas)
-	coordinator.StartFanout(conn, jwtTokenString)
+
+	// Send initial response with opID and offset
+	responseBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(responseBytes, offset)
+	if _, err := conn.Write(responseBytes); err != nil {
+		slog.Error("Failed to send offset to client", "error", err)
+		return
+	}
+
+	// Stream data from client and fanout to replicas
+	slog.Info("starting fanout to replicas", "opID", opId, "numReplicas", len(claims.Replicas))
+	if err := coordinator.StartFanout(conn, jwtTokenString); err != nil {
+		slog.Error("Fanout failed", "error", err)
+		return
+	}
+
+	slog.Info("data replication complete, waiting for quorum", "opID", opId, "chunkHandle", claims.ChunkHandle, "replicationFactor", 3)
+
+	// Wait for quorum (2 out of 3 replicas for RF=3)
+	if !fds.waitForQuorum(stagedchunk, 3, 10) {
+		slog.Error("quorum not reached", "opID", opId)
+		// Send failure response
+		conn.Write([]byte{0}) // 0 = failure
+		return
+	}
+
+	slog.Info("quorum reached, initiating commit phase", "opID", opId)
+
+	// Send COMMIT to all replicas
+	if err := fds.commitToReplicas(claims.Replicas, opId); err != nil {
+		slog.Error("failed to commit to replicas", "error", err)
+		conn.Write([]byte{0}) // 0 = failure
+		return
+	}
+
+	// Commit on primary
+	if err := stagedchunk.Commit(); err != nil {
+		slog.Error("failed to commit on primary", "error", err)
+		conn.Write([]byte{0}) // 0 = failure
+		return
+	}
+
+	slog.Info("commit successful", "opID", opId, "chunkHandle", claims.ChunkHandle, "offset", offset)
+
+	// Send success response to client
+	conn.Write([]byte{1}) // 1 = success
+}
+
+// waitForQuorum waits for the staged chunk to reach quorum
+// replicationFactor: number of total replicas (e.g., 3)
+// timeoutSeconds: max time to wait
+func (fds *FileDownloadService) waitForQuorum(sc *stagedchunk.StagedChunk, replicationFactor int, timeoutSeconds int) bool {
+	deadline := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)
+	quorumNeeded := replicationFactor/2 + 1
+
+	slog.Info("waiting for quorum", "opID", sc.OpId, "quorumNeeded", quorumNeeded-1, "replicationFactor", replicationFactor)
+
+	for time.Now().Before(deadline) {
+		readyCount := sc.GetReadyCount()
+		if sc.IsQuorumReady(replicationFactor) {
+			slog.Info("quorum reached!", "opID", sc.OpId, "readyCount", readyCount, "quorumNeeded", quorumNeeded-1)
+			return true
+		}
+		slog.Debug("waiting for more replicas", "opID", sc.OpId, "readyCount", readyCount, "quorumNeeded", quorumNeeded-1)
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	slog.Warn("timeout waiting for quorum", "opID", sc.OpId, "readyCount", sc.GetReadyCount(), "quorumNeeded", quorumNeeded-1)
+	return false
+}
+
+// commitToReplicas sends COMMIT to all replicas
+func (fds *FileDownloadService) commitToReplicas(replicas []csstructs.ReplicaIdentifier, opID string) error {
+	errors := replicationclient.SendCommitToAllReplicas(replicas, opID)
+
+	if len(errors) > 0 {
+		return fmt.Errorf("commit failed on %d replicas", len(errors))
+	}
+
+	return nil
 }

@@ -39,6 +39,6 @@ message Commit {
 
 service Replicator {
     rpc Replicate (stream ReplicationFrame) returns (ReplicationResponse);
-    rpc Ready (Ready) returns (ReplicationResponse);
-    rpc Commit (Commit) returns (ReplicationResponse);
+    rpc RecvReady (Ready) returns (ReplicationResponse);
+    rpc RecvCommit (Commit) returns (ReplicationResponse);
 }

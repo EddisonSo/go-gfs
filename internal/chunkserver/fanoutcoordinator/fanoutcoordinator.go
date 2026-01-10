@@ -53,17 +53,25 @@ func (f *fanoutcoordinator) StartFanout(conn net.Conn, jwtTokenString string) er
 			}
 		}
 		if err != nil {
-			for _, fw := range forwarders {
-				if err := fw.Pw.Close(); err != nil {
-					slog.Error("Failed to close forwarder pipe", "error", err)
+			if err == io.EOF {
+				slog.Info("finished reading data from client", "totalBytes", total)
+				// Close forwarders
+				for _, fw := range forwarders {
+					if err := fw.Pw.Close(); err != nil {
+						slog.Error("Failed to close forwarder pipe", "error", err)
+					}
 				}
+				break
 			}
+			// Non-EOF error - close and return error
+			slog.Error("error reading from client", "error", err)
+			for _, fw := range forwarders {
+				fw.Pw.Close()
+			}
+			return err
 		}
-		if err == io.EOF {
-			break
-		}
-		return err
 	}
-    
+
+	slog.Info("fanout completed successfully", "totalBytes", total)
 	return nil
 }

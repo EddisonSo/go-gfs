@@ -1,17 +1,26 @@
 package replicationplane
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
 
 	pb "eddisonso.com/go-gfs/gen/chunkreplication"
 	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
+	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
 )
 
 type ReplicationPlane struct {
 	pb.UnimplementedReplicatorServer
+	config csstructs.ChunkServerConfig
+}
+
+func NewReplicationPlane(config csstructs.ChunkServerConfig) *ReplicationPlane {
+	return &ReplicationPlane{
+		config: config,
+	}
 }
 
 
@@ -47,7 +56,7 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 
 			slog.Info("starting replication", "chunkHandle", chunkHandle, "opID", opID, "length", length, "offset", offset)
 
-			sc = stagedchunk.NewStagedChunk(chunkHandle, opID, length, offset)
+			sc = stagedchunk.NewStagedChunk(chunkHandle, opID, length, offset, rp.config.Dir)
 			chunkstagingtrackingservice.GetChunkStagingTrackingService().AddStagedChunk(sc)
 		case *pb.ReplicationFrame_Data:
 			if sc == nil {
@@ -67,6 +76,65 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 	}
 }
 
-func (rp *ReplicationPlane) RecvReady(stream pb.Replicator_ReplicateServer) error {
-    return nil
+func (rp *ReplicationPlane) RecvReady(ctx context.Context, req *pb.Ready) (*pb.ReplicationResponse, error) {
+	opID := req.GetOpId()
+	replica := req.GetReplica()
+
+	slog.Info("received ready signal", "opID", opID, "replica", replica)
+
+	// Get the staged chunk by operation ID
+	trackingService := chunkstagingtrackingservice.GetChunkStagingTrackingService()
+	sc := trackingService.GetStagedChunk(opID)
+
+	if sc == nil {
+		slog.Error("staged chunk not found", "opID", opID)
+		return &pb.ReplicationResponse{
+			Success: false,
+			Message: "staged chunk not found for opID: " + opID,
+		}, nil
+	}
+
+	// Mark the replica as ready
+	sc.Ready()
+
+	slog.Info("staged chunk marked as ready", "opID", opID, "chunkHandle", sc.ChunkHandle)
+
+	return &pb.ReplicationResponse{
+		Success: true,
+		Message: "ready acknowledged",
+	}, nil
+}
+
+func (rp *ReplicationPlane) RecvCommit(ctx context.Context, req *pb.Commit) (*pb.ReplicationResponse, error) {
+	opID := req.GetOpId()
+
+	slog.Info("received commit signal", "opID", opID)
+
+	// Get the staged chunk by operation ID
+	trackingService := chunkstagingtrackingservice.GetChunkStagingTrackingService()
+	sc := trackingService.GetStagedChunk(opID)
+
+	if sc == nil {
+		slog.Error("staged chunk not found", "opID", opID)
+		return &pb.ReplicationResponse{
+			Success: false,
+			Message: "staged chunk not found for opID: " + opID,
+		}, nil
+	}
+
+	// Commit the staged chunk to disk
+	if err := sc.Commit(); err != nil {
+		slog.Error("failed to commit staged chunk", "opID", opID, "chunkHandle", sc.ChunkHandle, "error", err)
+		return &pb.ReplicationResponse{
+			Success: false,
+			Message: "failed to commit: " + err.Error(),
+		}, nil
+	}
+
+	slog.Info("staged chunk committed successfully", "opID", opID, "chunkHandle", sc.ChunkHandle, "offset", sc.Offset)
+
+	return &pb.ReplicationResponse{
+		Success: true,
+		Message: "commit successful",
+	}, nil
 }

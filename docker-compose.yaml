@@ -5,25 +5,34 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    command: ["./chunkserver", "-p", "8080", "-r", "8081", "-h", "chunkserver1", "-d", "/data/chunkserver1", "-id", "chunkserver1"]
     ports:
       - "8080:8080"
       - "8081:8081"
+    volumes:
+      - ./data/chunkserver1:/data/chunkserver1
   chunkserver2:
     image: gfs-chunkserver
     container_name: chunkserver2
     build:
       context: .
       dockerfile: Dockerfile
+    command: ["./chunkserver", "-p", "8080", "-r", "8081", "-h", "chunkserver2", "-d", "/data/chunkserver2", "-id", "chunkserver2"]
     ports:
       - "8082:8080"
       - "8083:8081"
+    volumes:
+      - ./data/chunkserver2:/data/chunkserver2
   chunkserver3:
     image: gfs-chunkserver
     container_name: chunkserver3
     build:
       context: .
       dockerfile: Dockerfile
+    command: ["./chunkserver", "-p", "8080", "-r", "8081", "-h", "chunkserver3", "-d", "/data/chunkserver3", "-id", "chunkserver3"]
     ports:
       - "8084:8080"
       - "8085:8081"
+    volumes:
+      - ./data/chunkserver3:/data/chunkserver3
 
