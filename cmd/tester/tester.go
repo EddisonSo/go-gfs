@@ -22,6 +22,7 @@ import (
 var (
 	doWrite     bool
 	doRead      bool
+	doList      bool
 	inputFile   string
 	outputFile  string
 	filePath    string
@@ -38,6 +39,7 @@ var (
 func init() {
 	flag.BoolVar(&doWrite, "write", false, "Perform write operation")
 	flag.BoolVar(&doRead, "read", false, "Perform read operation")
+	flag.BoolVar(&doList, "ls", false, "List all files")
 	flag.StringVar(&inputFile, "input", "", "Input file for write operation (reads from file instead of --data)")
 	flag.StringVar(&outputFile, "output", "", "Output file for read operation (writes chunk data to file)")
 	flag.StringVar(&filePath, "file", "", "File path in GFS namespace (required with -master)")
@@ -76,8 +78,8 @@ func main() {
 
 	// Check if using master or standalone mode
 	if masterAddr != "" {
-		if filePath == "" {
-			log.Fatal("Must specify -file when using -master mode")
+		if filePath == "" && !doList {
+			log.Fatal("Must specify -file when using -master mode (except for -ls)")
 		}
 		runWithMaster(writeData)
 	} else if chunkHandle != "" {
@@ -99,6 +101,23 @@ func runWithMaster(writeData []byte) {
 	client := pb.NewMasterClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// List files if requested
+	if doList {
+		log.Println("=== File Listing ===")
+		listResp, err := client.ListFiles(ctx, &pb.ListFilesRequest{})
+		if err != nil {
+			log.Fatalf("Failed to list files: %v", err)
+		}
+		if len(listResp.Files) == 0 {
+			log.Println("No files found")
+		} else {
+			for _, f := range listResp.Files {
+				log.Printf("  %s (%d chunks, %d bytes)", f.Path, len(f.ChunkHandles), f.Size)
+			}
+		}
+		return
+	}
 
 	// Create file if it doesn't exist
 	log.Printf("Creating file: %s", filePath)

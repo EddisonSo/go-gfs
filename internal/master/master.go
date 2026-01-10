@@ -33,6 +33,7 @@ const (
 // ChunkInfo contains metadata about a chunk
 type ChunkInfo struct {
 	Handle    ChunkHandle
+	FilePath  string          // File this chunk belongs to
 	Locations []ChunkLocation // Replica locations
 	Version   uint64          // Chunk version for consistency
 	Primary   *ChunkLocation  // Current primary (lease holder)
@@ -226,6 +227,7 @@ func (m *Master) AddChunkToFile(path string) (*ChunkInfo, error) {
 	m.chunkMu.Lock()
 	chunkInfo := &ChunkInfo{
 		Handle:    handle,
+		FilePath:  path,
 		Locations: replicas,
 		Version:   1,
 		Primary:   &replicas[0], // First replica is primary
@@ -328,16 +330,33 @@ func (m *Master) ReportChunk(serverID ChunkServerID, handle ChunkHandle) {
 // ConfirmChunkCommit is called by chunkserver after successful 2PC commit
 func (m *Master) ConfirmChunkCommit(serverID ChunkServerID, handle ChunkHandle, size uint64) error {
 	m.chunkMu.Lock()
-	defer m.chunkMu.Unlock()
-
 	chunk, exists := m.chunks[handle]
 	if !exists {
+		m.chunkMu.Unlock()
 		return fmt.Errorf("chunk not found: %s", handle)
 	}
 
-	// Update chunk status
+	// Update chunk status and size
 	chunk.Status = ChunkCommitted
 	chunk.Size = size
+	filePath := chunk.FilePath
+	m.chunkMu.Unlock()
+
+	// Update file size
+	m.fileMu.Lock()
+	if file, exists := m.files[filePath]; exists {
+		// Recalculate total file size from all chunks
+		m.chunkMu.RLock()
+		var totalSize uint64
+		for _, h := range file.Chunks {
+			if c, ok := m.chunks[h]; ok {
+				totalSize += c.Size
+			}
+		}
+		m.chunkMu.RUnlock()
+		file.Size = totalSize
+	}
+	m.fileMu.Unlock()
 
 	slog.Info("chunk commit confirmed", "handle", handle, "serverID", serverID, "size", size, "status", "committed")
 	return nil
