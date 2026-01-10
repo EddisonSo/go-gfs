@@ -89,29 +89,3 @@ internal/chunkserver/
 proto/              - gRPC service definitions
 data/               - Persistent storage (Docker volumes)
 ```
-
-## What's Implemented
-
-- ✅ Data replication across 3 chunkservers
-- ✅ Quorum-based writes (2/3 must confirm)
-- ✅ Atomic commits with fsync for durability
-- ✅ gRPC for internal communication
-- ✅ Offset allocation for append operations
-
-## What's NOT Implemented
-
-- ❌ Master server (metadata, namespace, health checks)
-- ❌ Client library (high-level API)
-- ❌ Lease management
-- ❌ Checksums for data integrity
-- ❌ Garbage collection
-- ❌ Re-replication on failure
-
-## Documentation
-
-See [CLAUDE.md](CLAUDE.md) for comprehensive developer documentation including:
-- Detailed architecture and component descriptions
-- Protocol specifications
-- Testing guide
-- Troubleshooting
-- Code patterns and implementation notes
