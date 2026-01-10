@@ -1,201 +1,117 @@
-# Append-Only Distributed File System (GFS-style)
+# Go-GFS: Distributed File System
 
-## Overview
-This project implements a simplified Google File System (GFS)-like storage system optimized for **append-only workloads** such as logs.  
-It provides a **master** for metadata management, **chunkservers** for data storage, and supports fault-tolerant appends and reads with replication.
+A simplified Google File System (GFS) implementation in Go, featuring append-only writes, replication, and two-phase commit for data durability.
 
-## Core Concepts
-- **Chunks:** Files are split into fixed-size chunks (default 64MB). Each chunk is replicated (RF=3).
-- **Master:** Stores metadata (file → chunk mapping, replica sets, chunk lengths). Handles namespace, placement, heartbeats, and repair.
-- **Chunkservers:** Store raw chunks, checksums, and handle read/write requests. They are stateless regarding file layout.
-- **Append-only writes:** Data is appended atomically to the tail chunk. Once full, a new chunk is created.
+## Status
 
-## Network Architecture
+**Current:** Data persistence layer is complete and functional. Master server is not yet implemented.
 
-### Communication Planes
+## Key Features
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    CLIENT APPLICATION                        │
-└──────────────────────┬──────────────────────────────────────┘
-                       │ TCP (port 8080) - Data Plane
-                       │ Custom protocol with JWT auth
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  PRIMARY CHUNKSERVER (CS1)                   │
-│  - Receives client data on port 8080                         │
-│  - Allocates offset atomically                               │
-│  - Coordinates 2PC via gRPC on port 8081                     │
-└──────┬────────────────────────────────────────────┬─────────┘
-       │ gRPC (port 8081) - Replication Plane       │
-       │ Replicate() streaming RPC                  │
-       ▼                                            ▼
-┌──────────────────┐                        ┌──────────────────┐
-│  REPLICA CS2     │                        │  REPLICA CS3     │
-│  - Port 8083     │                        │  - Port 8085     │
-│  - Stages data   │                        │  - Stages data   │
-│  - Waits commit  │                        │  - Waits commit  │
-└──────────────────┘                        └──────────────────┘
-       ▲                                            ▲
-       │ gRPC RecvCommit() unary RPC               │
-       └────────────────────┬───────────────────────┘
-                            │
-                   Primary sends COMMIT
-```
+- **Append-only writes** - No random writes or overwrites
+- **Replication Factor 3** - Fault-tolerant storage across 3 chunkservers
+- **Two-Phase Commit (2PC)** - Atomic persistence with quorum-based writes (2/3)
+- **Chunk-based storage** - 64MB chunks with offset allocation
+- **Dual communication planes** - TCP for clients (port 8080), gRPC for replication (port 8081)
 
-**Data Plane (Port 8080):**
-- Protocol: Custom TCP
-- Purpose: Client ↔ Primary communication
-- Handles: Client uploads, JWT authentication, offset allocation
-
-**Replication Plane (Port 8081):**
-- Protocol: gRPC (Replicator service)
-- Purpose: Chunkserver ↔ Chunkserver communication
-- Handles: Data replication, 2PC coordination (READY/COMMIT)
-
-## Write Path (Append) - Network Call Sequence
-
-### Complete Flow with Network Calls
+## Architecture
 
 ```
-CLIENT                PRIMARY (CS1)           REPLICA CS2           REPLICA CS3
-  │                        │                       │                     │
-  │ (1) TCP Connect        │                       │                     │
-  │───────────────────────>│                       │                     │
-  │      :8080             │                       │                     │
-  │                        │                       │                     │
-  │ (2) Send Request       │                       │                     │
-  │  [Action|JWT|Data]     │                       │                     │
-  │───────────────────────>│                       │                     │
-  │                        │                       │                     │
-  │                        │ (3) Allocate offset   │                     │
-  │                        │     Create StagedChunk│                     │
-  │                        │                       │                     │
-  │ (4) Response: Offset   │                       │                     │
-  │<───────────────────────│                       │                     │
-  │       [uint64]         │                       │                     │
-  │                        │                       │                     │
-  │ (5) Stream Data        │                       │                     │
-  │───────────────────────>│ (6) gRPC Replicate()  │                     │
-  │                        │──────────────────────>│                     │
-  │                        │       :8083           │                     │
-  │                        │                       │                     │
-  │                        │ (7) gRPC Replicate()  │                     │
-  │                        │───────────────────────────────────────────>│
-  │                        │                       │       :8085         │
-  │                        │                       │                     │
-  │                        │   Stream: Metadata    │                     │
-  │                        │   + Data Frames       │   Stream: Metadata  │
-  │                        │                       │   + Data Frames     │
-  │                        │                       │                     │
-  │                        │ (8) Response: Success │                     │
-  │                        │<──────────────────────│                     │
-  │                        │   [Calls Ready()]     │                     │
-  │                        │                       │                     │
-  │                        │ (9) Response: Success │                     │
-  │                        │<───────────────────────────────────────────│
-  │                        │   [Calls Ready()]     │                     │
-  │                        │                       │                     │
-  │ (6) CloseWrite (EOF)   │ (10) Check Quorum     │                     │
-  │───────────────────────>│   2/3 ready? YES!     │                     │
-  │                        │                       │                     │
-  │                        │──── PHASE 2: COMMIT ───────────────────────│
-  │                        │                       │                     │
-  │                        │ (11) RecvCommit(opID) │                     │
-  │                        │──────────────────────>│                     │
-  │                        │                       │ (12) Commit()       │
-  │                        │                       │  Write to disk      │
-  │                        │                       │  fsync()            │
-  │                        │                       │                     │
-  │                        │ (13) RecvCommit(opID) │                     │
-  │                        │───────────────────────────────────────────>│
-  │                        │                       │  (14) Commit()      │
-  │                        │                       │   Write to disk     │
-  │                        │                       │   fsync()           │
-  │                        │                       │                     │
-  │                        │ (15) Response: OK     │                     │
-  │                        │<──────────────────────│                     │
-  │                        │                       │                     │
-  │                        │ (16) Response: OK     │                     │
-  │                        │<───────────────────────────────────────────│
-  │                        │                       │                     │
-  │                        │ (17) Local Commit()   │                     │
-  │                        │  Write to disk, fsync │                     │
-  │                        │                       │                     │
-  │ (18) Response: Success │                       │                     │
-  │<───────────────────────│                       │                     │
-  │       [byte = 1]       │                       │                     │
-  │                        │                       │                     │
+Client (TCP :8080)
+    ↓
+Primary Chunkserver
+    ↓ (gRPC :8081)
+Replica Chunkservers (RF=3)
 ```
 
-### Two-Phase Commit Protocol Details
+### Write Flow (2PC)
 
-#### Phase 1: READY (Data Replication)
+1. **READY Phase:** Client sends data → Primary allocates offset → Data replicated to all replicas (in-memory staging)
+2. **COMMIT Phase:** Primary waits for quorum (2/3) → Sends COMMIT signal → All replicas persist to disk with fsync
 
-1. **Client → Primary:** Send data via TCP (port 8080)
-   - Format: `[Action(4B)] [JWT_len(4B)] [JWT(NB)] [Data(MB)]`
+## Quick Start
 
-2. **Primary:** Allocate offset, create StagedChunk (status=READY)
-   - Atomic offset allocation per chunk
-   - In-memory staging buffer created
+### Build
 
-3. **Primary → Replicas:** Stream data via gRPC `Replicate()` (port 8081)
-   - First frame: ReplicationMetadata (opID, chunkHandle, offset, length)
-   - Subsequent frames: ReplicationData (streaming chunks)
+```bash
+make all           # Build chunkserver and tester
+make proto         # Regenerate protobuf files
+```
 
-4. **Replicas:** Create StagedChunk, buffer data (status=READY)
-   - Store in ChunkStagingTrackingService by opID
-   - Data buffered in memory, NOT on disk yet
+### Run with Docker
 
-5. **Replicas → Primary:** Return success, call `Ready()`
-   - Increments ready counter in primary's StagedChunk
+```bash
+# Start 3-node cluster
+docker compose up --build
 
-6. **Primary:** Wait for quorum (2/3 replicas ready)
-   - Polls `IsQuorumReady()` until satisfied or timeout (10s)
+# Run test client (in another terminal)
+./build/tester
 
-#### Phase 2: COMMIT (Data Persistence)
+# Verify data written to all replicas
+cat data/chunkserver1/1234
+cat data/chunkserver2/1234
+cat data/chunkserver3/1234
 
-7. **Primary:** Quorum reached! Initiate commit phase
+# Clean up
+docker compose down
+```
 
-8. **Primary → All Replicas:** Send gRPC `RecvCommit(opID)` (unary RPC)
-   - Sent in parallel to all replicas
-   - Continues even if some fail (quorum already satisfied)
+### Run Locally
 
-9. **Replicas:** Look up StagedChunk by opID
-   - Uses ChunkStagingTrackingService singleton
+```bash
+# Terminal 1: Primary
+./build/chunkserver -p 8080 -r 8081 -h localhost -d tmp/cs1 -id cs1
 
-10. **Replicas:** Call `Commit()` - write to disk with fsync
-    - Open/create chunk file: `{storageDir}/{chunkHandle}`
-    - Seek to offset
-    - Write buffer contents
-    - **fsync() for durability**
-    - Update status to COMMIT
+# Terminal 2: Replica 2
+./build/chunkserver -p 8082 -r 8083 -h localhost -d tmp/cs2 -id cs2
 
-11. **Replicas → Primary:** Return success/failure
+# Terminal 3: Replica 3
+./build/chunkserver -p 8084 -r 8085 -h localhost -d tmp/cs3 -id cs3
 
-12. **Primary:** Commit locally to disk
-    - Same process: write + fsync
+# Terminal 4: Test
+./build/tester
+```
 
-13. **Primary → Client:** Send success (byte=1) or failure (byte=0)
+## Project Structure
 
-## Read Path
-1. **Client → Master:** Get file plan (ordered chunks + lengths).
-2. **Client → Chunkservers:** Fetch each chunk `[0..length)` with checksum verification.
-3. Chunks are concatenated in order to reconstruct the file.
+```
+cmd/
+  chunkserver/      - Chunkserver entry point
+  tester/           - Test client for data persistence
+  master/           - Master server (not implemented)
 
-## Fault Tolerance
-- Replication factor of 3; system tolerates 1 replica failure.
-- Checksums detect corruption on reads and writes.
-- Master re-replicates missing or corrupted chunks in the background.
-- Replicas truncate to last valid checksum on crash recovery.
+internal/chunkserver/
+  dataplane/        - TCP server for client connections (:8080)
+  replicationplane/ - gRPC server for replica communication (:8081)
+  stagedchunk/      - In-memory staged data + disk persistence
+  fanoutcoordinator/ - Parallel data replication
 
-## Supported Operations
-- **Create/Delete File**
-- **Append to File**
-- **Read File (whole file or by chunks)**
+proto/              - gRPC service definitions
+data/               - Persistent storage (Docker volumes)
+```
 
-## Limitations (MVP)
-- Append-only (no overwrite or random writes).
-- Single master (no HA yet).
-- Quorum=2/3 fixed (no dynamic policies).
-- Best-effort at-least-once semantics (clients deduplicate via checksums/IDs).
+## What's Implemented
+
+- ✅ Data replication across 3 chunkservers
+- ✅ Quorum-based writes (2/3 must confirm)
+- ✅ Atomic commits with fsync for durability
+- ✅ gRPC for internal communication
+- ✅ Offset allocation for append operations
+
+## What's NOT Implemented
+
+- ❌ Master server (metadata, namespace, health checks)
+- ❌ Client library (high-level API)
+- ❌ Lease management
+- ❌ Checksums for data integrity
+- ❌ Garbage collection
+- ❌ Re-replication on failure
+
+## Documentation
+
+See [CLAUDE.md](CLAUDE.md) for comprehensive developer documentation including:
+- Detailed architecture and component descriptions
+- Protocol specifications
+- Testing guide
+- Troubleshooting
+- Code patterns and implementation notes
