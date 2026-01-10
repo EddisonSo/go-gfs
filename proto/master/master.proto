@@ -1,0 +1,145 @@
+syntax = "proto3";
+
+package master.v1;
+option go_package = "eddisonso.com/go-gfs/gen/master;master";
+
+// ChunkServer location info
+message ChunkServerInfo {
+    string server_id = 1;
+    string hostname = 2;
+    int32 data_port = 3;
+    int32 replication_port = 4;
+}
+
+// Chunk location with primary indicator
+message ChunkLocationInfo {
+    string chunk_handle = 1;
+    repeated ChunkServerInfo locations = 2;
+    ChunkServerInfo primary = 3;
+    uint64 version = 4;
+    uint64 size = 5;  // Current size of chunk in bytes
+}
+
+// File metadata
+message FileInfoResponse {
+    string path = 1;
+    repeated string chunk_handles = 2;
+    uint64 size = 3;
+    uint64 chunk_size = 4;
+}
+
+// ============ Chunkserver -> Master RPCs ============
+
+message RegisterRequest {
+    string server_id = 1;
+    string hostname = 2;
+    int32 data_port = 3;
+    int32 replication_port = 4;
+    repeated string chunk_handles = 5;  // Chunks this server has
+}
+
+message RegisterResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message HeartbeatRequest {
+    string server_id = 1;
+    repeated string chunk_handles = 2;  // Current chunks on this server
+}
+
+message HeartbeatResponse {
+    bool success = 1;
+    repeated string chunks_to_delete = 2;  // Garbage collection
+}
+
+// Report successful chunk commit
+message ReportCommitRequest {
+    string server_id = 1;
+    string chunk_handle = 2;
+    uint64 size = 3;  // Bytes written
+}
+
+message ReportCommitResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// ============ Client -> Master RPCs ============
+
+message CreateFileRequest {
+    string path = 1;
+}
+
+message CreateFileResponse {
+    bool success = 1;
+    string message = 2;
+    FileInfoResponse file = 3;
+}
+
+message GetFileRequest {
+    string path = 1;
+}
+
+message GetFileResponse {
+    bool success = 1;
+    string message = 2;
+    FileInfoResponse file = 3;
+}
+
+message DeleteFileRequest {
+    string path = 1;
+}
+
+message DeleteFileResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message ListFilesRequest {
+    string prefix = 1;  // Optional path prefix filter
+}
+
+message ListFilesResponse {
+    repeated FileInfoResponse files = 1;
+}
+
+// Request a new chunk for writing to a file
+message AllocateChunkRequest {
+    string path = 1;
+}
+
+message AllocateChunkResponse {
+    bool success = 1;
+    string message = 2;
+    ChunkLocationInfo chunk = 3;
+}
+
+// Get chunk locations for reading
+message GetChunkLocationsRequest {
+    string path = 1;
+}
+
+message GetChunkLocationsResponse {
+    bool success = 1;
+    string message = 2;
+    repeated ChunkLocationInfo chunks = 3;
+}
+
+// Master service
+service Master {
+    // Chunkserver registration and heartbeat
+    rpc Register(RegisterRequest) returns (RegisterResponse);
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+    rpc ReportCommit(ReportCommitRequest) returns (ReportCommitResponse);
+
+    // File operations
+    rpc CreateFile(CreateFileRequest) returns (CreateFileResponse);
+    rpc GetFile(GetFileRequest) returns (GetFileResponse);
+    rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+    rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+
+    // Chunk operations
+    rpc AllocateChunk(AllocateChunkRequest) returns (AllocateChunkResponse);
+    rpc GetChunkLocations(GetChunkLocationsRequest) returns (GetChunkLocationsResponse);
+}

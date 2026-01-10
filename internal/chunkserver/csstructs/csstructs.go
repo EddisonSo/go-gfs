@@ -20,11 +20,12 @@ type ReplicaIdentifier struct {
 }
 
 type DownloadRequestClaims struct {
-	ChunkHandle string `json:"chunk_handle"`
-	Operation string `json:"operation"`
-	Filesize uint64 `json:"file_size"`
-	Replicas []ReplicaIdentifier `json:"replicas"`
-	Primary ReplicaIdentifier `json:"primary"`
+	ChunkHandle string              `json:"chunk_handle"`
+	Operation   string              `json:"operation"`
+	Filesize    uint64              `json:"file_size"`
+	Offset      int64               `json:"offset"` // -1 means auto-allocate (append), >= 0 means random write at offset
+	Replicas    []ReplicaIdentifier `json:"replicas"`
+	Primary     ReplicaIdentifier   `json:"primary"`
 	jwt.RegisteredClaims
 }
 

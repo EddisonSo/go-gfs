@@ -15,28 +15,30 @@ import (
 )
 
 type Forwarder struct {
-	replica csstructs.ReplicaIdentifier
-	opId string
+	replica     csstructs.ReplicaIdentifier
+	opId        string
 	chunkHandle string
 	stagedchunk *stagedchunk.StagedChunk
-	Lr *io.LimitedReader
-	Pw *io.PipeWriter
-	chunkSize uint64
-	offset uint64
+	Lr          *io.LimitedReader
+	Pw          *io.PipeWriter
+	chunkSize   uint64
+	offset      uint64
+	sequence    uint64
 }
 
-func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle string, stagedchunk *stagedchunk.StagedChunk, chunkSize uint64, offset uint64) *Forwarder {
+func NewForwarder(replica csstructs.ReplicaIdentifier, opId string, chunkHandle string, stagedchunk *stagedchunk.StagedChunk, chunkSize uint64, offset uint64, sequence uint64) *Forwarder {
 	pr, pw := io.Pipe()
-	lr := io.LimitedReader{R:pr, N:int64(chunkSize)}
+	lr := io.LimitedReader{R: pr, N: int64(chunkSize)}
 	return &Forwarder{
-		replica: replica,
-		opId: opId,
+		replica:     replica,
+		opId:        opId,
 		chunkHandle: chunkHandle,
 		stagedchunk: stagedchunk,
-		Lr: &lr,
-		Pw: pw,
-		chunkSize: chunkSize,
-		offset: offset,
+		Lr:          &lr,
+		Pw:          pw,
+		chunkSize:   chunkSize,
+		offset:      offset,
+		sequence:    sequence,
 	}
 }
 
@@ -61,11 +63,12 @@ func (f *Forwarder) StartForward() error {
 	slog.Info("Forwarder connected to replica", "replica", f.replica.Hostname, "opId", f.opId, "chunkHandle", f.chunkHandle)
 
 	meta := &pb.ReplicationMetadata{
-		OpId: f.opId,
+		OpId:        f.opId,
 		ChunkHandle: f.chunkHandle,
-		Length: f.chunkSize,
-		Offset: f.offset,
-		Epoch: 1,
+		Length:      f.chunkSize,
+		Offset:      f.offset,
+		Epoch:       1,
+		Sequence:    f.sequence,
 	}
 
 

@@ -29,6 +29,7 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 	var chunkHandle, opID string
 	var length uint64
 	var offset uint64
+	var sequence uint64
 
 	for {
 		frame, err := stream.Recv()
@@ -38,7 +39,7 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 				msg += " for " + chunkHandle
 			}
 
-			slog.Info("replication complete", "chunkHandle", chunkHandle, "opID", opID, "length", length)
+			slog.Info("replication complete", "chunkHandle", chunkHandle, "opID", opID, "length", length, "sequence", sequence)
 			return stream.SendAndClose(&pb.ReplicationResponse{
 				Success: true,
 				Message: msg,
@@ -53,10 +54,11 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 			opID = meta.GetOpId()
 			length = meta.GetLength()
 			offset = meta.GetOffset()
+			sequence = meta.GetSequence()
 
-			slog.Info("starting replication", "chunkHandle", chunkHandle, "opID", opID, "length", length, "offset", offset)
+			slog.Info("starting replication", "chunkHandle", chunkHandle, "opID", opID, "length", length, "offset", offset, "sequence", sequence)
 
-			sc = stagedchunk.NewStagedChunk(chunkHandle, opID, length, offset, rp.config.Dir)
+			sc = stagedchunk.NewStagedChunk(chunkHandle, opID, length, offset, sequence, rp.config.Dir)
 			chunkstagingtrackingservice.GetChunkStagingTrackingService().AddStagedChunk(sc)
 		case *pb.ReplicationFrame_Data:
 			if sc == nil {
@@ -122,8 +124,9 @@ func (rp *ReplicationPlane) RecvCommit(ctx context.Context, req *pb.Commit) (*pb
 		}, nil
 	}
 
-	// Commit the staged chunk to disk
-	if err := sc.Commit(); err != nil {
+	// Commit in sequence order (may buffer if out of order)
+	committed, err := trackingService.CommitInOrder(sc)
+	if err != nil {
 		slog.Error("failed to commit staged chunk", "opID", opID, "chunkHandle", sc.ChunkHandle, "error", err)
 		return &pb.ReplicationResponse{
 			Success: false,
@@ -131,7 +134,11 @@ func (rp *ReplicationPlane) RecvCommit(ctx context.Context, req *pb.Commit) (*pb
 		}, nil
 	}
 
-	slog.Info("staged chunk committed successfully", "opID", opID, "chunkHandle", sc.ChunkHandle, "offset", sc.Offset)
+	if len(committed) > 0 {
+		slog.Info("commits applied", "opID", opID, "chunkHandle", sc.ChunkHandle, "count", len(committed), "sequence", sc.Sequence)
+	} else {
+		slog.Info("commit buffered (waiting for earlier sequence)", "opID", opID, "chunkHandle", sc.ChunkHandle, "sequence", sc.Sequence)
+	}
 
 	return &pb.ReplicationResponse{
 		Success: true,

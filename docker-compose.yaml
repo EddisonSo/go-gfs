@@ -1,38 +1,57 @@
 services:
+  master:
+    image: gfs-master
+    container_name: master
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["./master", "-port", "9000"]
+    network_mode: host
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9000 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
   chunkserver1:
     image: gfs-chunkserver
     container_name: chunkserver1
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["./chunkserver", "-p", "8080", "-r", "8081", "-h", "chunkserver1", "-d", "/data/chunkserver1", "-id", "chunkserver1"]
-    ports:
-      - "8080:8080"
-      - "8081:8081"
+    command: ["./chunkserver", "-p", "8080", "-r", "8081", "-h", "localhost", "-d", "/data/chunkserver1", "-id", "chunkserver1", "-master", "localhost:9000"]
+    network_mode: host
     volumes:
       - ./data/chunkserver1:/data/chunkserver1
+    depends_on:
+      master:
+        condition: service_healthy
+
   chunkserver2:
     image: gfs-chunkserver
     container_name: chunkserver2
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["./chunkserver", "-p", "8080", "-r", "8081", "-h", "chunkserver2", "-d", "/data/chunkserver2", "-id", "chunkserver2"]
-    ports:
-      - "8082:8080"
-      - "8083:8081"
+    command: ["./chunkserver", "-p", "8082", "-r", "8083", "-h", "localhost", "-d", "/data/chunkserver2", "-id", "chunkserver2", "-master", "localhost:9000"]
+    network_mode: host
     volumes:
       - ./data/chunkserver2:/data/chunkserver2
+    depends_on:
+      master:
+        condition: service_healthy
+
   chunkserver3:
     image: gfs-chunkserver
     container_name: chunkserver3
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["./chunkserver", "-p", "8080", "-r", "8081", "-h", "chunkserver3", "-d", "/data/chunkserver3", "-id", "chunkserver3"]
-    ports:
-      - "8084:8080"
-      - "8085:8081"
+    command: ["./chunkserver", "-p", "8084", "-r", "8085", "-h", "localhost", "-d", "/data/chunkserver3", "-id", "chunkserver3", "-master", "localhost:9000"]
+    network_mode: host
     volumes:
       - ./data/chunkserver3:/data/chunkserver3
-
+    depends_on:
+      master:
+        condition: service_healthy

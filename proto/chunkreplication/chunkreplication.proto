@@ -9,6 +9,7 @@ message ReplicationMetadata {
     uint64 length = 3;
     uint64 epoch = 4;
     uint64 offset = 5;
+    uint64 sequence = 6;
 }
 
 message ReplicationData {

@@ -15,6 +15,7 @@ import (
 	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/fanoutcoordinator"
+	"eddisonso.com/go-gfs/internal/chunkserver/masterclient"
 	"eddisonso.com/go-gfs/internal/chunkserver/replicationclient"
 	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
 	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
@@ -87,7 +88,7 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		return
 	}
 
-	slog.Info("Download request", "chunk_handle", claims.ChunkHandle, "operation", claims.Operation, "filesize", claims.Filesize)
+	slog.Info("Download request", "chunk_handle", claims.ChunkHandle, "operation", claims.Operation, "filesize", claims.Filesize, "offset", claims.Offset)
 	if claims.Operation != "download" {
 		slog.Error("Invalid operation", "operation", claims.Operation)
 		return
@@ -105,10 +106,26 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	}
 
 	opId := uuid.New().String()
-	offset, err := currAllocator.Allocate(claims.Filesize)
-	if err != nil {
-		slog.Error("Failed to allocate space for chunk", "error", err)
-		return
+	var offset uint64
+	var sequence uint64
+
+	if claims.Offset >= 0 {
+		// Random write at specified offset
+		offset = uint64(claims.Offset)
+		sequence, err = currAllocator.AllocateAt(offset, claims.Filesize)
+		if err != nil {
+			slog.Error("Failed to allocate at offset", "offset", offset, "error", err)
+			return
+		}
+		slog.Info("random write", "opID", opId, "offset", offset, "sequence", sequence)
+	} else {
+		// Append - allocate next offset
+		offset, sequence, err = currAllocator.Allocate(claims.Filesize)
+		if err != nil {
+			slog.Error("Failed to allocate space for chunk", "error", err)
+			return
+		}
+		slog.Info("append write", "opID", opId, "offset", offset, "sequence", sequence)
 	}
 
 	stagedchunk := stagedchunk.NewStagedChunk(
@@ -116,6 +133,7 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		opId,
 		claims.Filesize,
 		offset,
+		sequence,
 		fds.ChunkServerConfig.Dir,
 	)
 
@@ -159,14 +177,24 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		return
 	}
 
-	// Commit on primary
-	if err := stagedchunk.Commit(); err != nil {
+	// Commit on primary (in sequence order)
+	committed, err := fds.ChunkStagingTrackingService.CommitInOrder(stagedchunk)
+	if err != nil {
 		slog.Error("failed to commit on primary", "error", err)
 		conn.Write([]byte{0}) // 0 = failure
 		return
 	}
+	slog.Info("primary committed", "opID", opId, "count", len(committed))
 
 	slog.Info("commit successful", "opID", opId, "chunkHandle", claims.ChunkHandle, "offset", offset)
+
+	// Report commit to master (if connected)
+	if mc := masterclient.GetInstance(); mc != nil {
+		if err := mc.ReportCommit(claims.ChunkHandle, claims.Filesize); err != nil {
+			slog.Warn("failed to report commit to master", "error", err)
+			// Don't fail the write - master can discover via heartbeat
+		}
+	}
 
 	// Send success response to client
 	conn.Write([]byte{1}) // 1 = success

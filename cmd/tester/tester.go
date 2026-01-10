@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
@@ -8,10 +9,14 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
+	pb "eddisonso.com/go-gfs/gen/master"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
 	"github.com/golang-jwt/jwt/v5"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
@@ -19,10 +24,15 @@ var (
 	doRead      bool
 	inputFile   string
 	outputFile  string
+	filePath    string
+	data        string
+	writeOffset int64
+	masterAddr  string
+
+	// Legacy flags for standalone mode (no master)
 	chunkHandle string
 	host        string
 	port        int
-	data        string
 )
 
 func init() {
@@ -30,22 +40,201 @@ func init() {
 	flag.BoolVar(&doRead, "read", false, "Perform read operation")
 	flag.StringVar(&inputFile, "input", "", "Input file for write operation (reads from file instead of --data)")
 	flag.StringVar(&outputFile, "output", "", "Output file for read operation (writes chunk data to file)")
-	flag.StringVar(&chunkHandle, "chunk", "1234", "Chunk handle to read/write")
-	flag.StringVar(&host, "host", "localhost", "Chunkserver hostname")
-	flag.IntVar(&port, "port", 8080, "Chunkserver data port")
+	flag.StringVar(&filePath, "file", "", "File path in GFS namespace (required with -master)")
 	flag.StringVar(&data, "data", "hello", "Data to write (used if --input not specified)")
+	flag.Int64Var(&writeOffset, "offset", -1, "Write at specific offset (-1 for append)")
+	flag.StringVar(&masterAddr, "master", "", "Master server address (e.g., localhost:9000). Required for normal operation.")
+
+	// Legacy flags for standalone mode
+	flag.StringVar(&chunkHandle, "chunk", "", "Chunk handle (standalone mode only, bypasses master)")
+	flag.StringVar(&host, "host", "localhost", "Chunkserver hostname (standalone mode only)")
+	flag.IntVar(&port, "port", 8080, "Chunkserver data port (standalone mode only)")
 }
 
 func main() {
 	flag.Parse()
 
-	// If neither read nor write specified, run both (original test behavior)
+	// If neither read nor write specified, run both
 	if !doWrite && !doRead {
 		doWrite = true
 		doRead = true
 	}
 
-	// Define replica topology
+	var writeData []byte
+	if doWrite {
+		if inputFile != "" {
+			fileData, err := os.ReadFile(inputFile)
+			if err != nil {
+				log.Fatalf("Failed to read input file: %v", err)
+			}
+			writeData = fileData
+			log.Printf("Read %d bytes from %s", len(writeData), inputFile)
+		} else {
+			writeData = []byte(data)
+		}
+	}
+
+	// Check if using master or standalone mode
+	if masterAddr != "" {
+		if filePath == "" {
+			log.Fatal("Must specify -file when using -master mode")
+		}
+		runWithMaster(writeData)
+	} else if chunkHandle != "" {
+		runStandalone(writeData)
+	} else {
+		log.Fatal("Must specify either -master (for normal operation) or -chunk (for standalone mode)")
+	}
+}
+
+func runWithMaster(writeData []byte) {
+	log.Printf("Connecting to master at %s", masterAddr)
+
+	conn, err := grpc.NewClient(masterAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("Failed to connect to master: %v", err)
+	}
+	defer conn.Close()
+
+	client := pb.NewMasterClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Create file if it doesn't exist
+	log.Printf("Creating file: %s", filePath)
+	createResp, err := client.CreateFile(ctx, &pb.CreateFileRequest{Path: filePath})
+	if err != nil {
+		log.Fatalf("Failed to create file: %v", err)
+	}
+	if !createResp.Success {
+		// File might already exist, try to get it
+		log.Printf("File creation response: %s (may already exist)", createResp.Message)
+	} else {
+		log.Printf("File created: %s", filePath)
+	}
+
+	if doWrite {
+		log.Println("")
+		log.Println("=== Write Operation ===")
+
+		var chunk *pb.ChunkLocationInfo
+		const maxChunkSize = 64 << 20 // 64MB
+
+		// Check if file has existing chunks with space
+		locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: filePath})
+		if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
+			lastChunk := locResp.Chunks[len(locResp.Chunks)-1]
+			if lastChunk.Size+uint64(len(writeData)) <= maxChunkSize {
+				log.Printf("Using existing chunk: %s (size: %d bytes)", lastChunk.ChunkHandle, lastChunk.Size)
+				chunk = lastChunk
+			} else {
+				log.Printf("Last chunk full (%d bytes), allocating new chunk", lastChunk.Size)
+			}
+		}
+
+		// Allocate new chunk if needed
+		if chunk == nil {
+			log.Printf("Allocating chunk for file: %s", filePath)
+			allocResp, err := client.AllocateChunk(ctx, &pb.AllocateChunkRequest{Path: filePath})
+			if err != nil {
+				log.Fatalf("Failed to allocate chunk: %v", err)
+			}
+			if !allocResp.Success {
+				log.Fatalf("Chunk allocation failed: %s", allocResp.Message)
+			}
+			chunk = allocResp.Chunk
+			log.Printf("Allocated new chunk: %s", chunk.ChunkHandle)
+		}
+
+		log.Printf("Primary: %s:%d", chunk.Primary.Hostname, chunk.Primary.DataPort)
+		log.Printf("Replicas: %d locations", len(chunk.Locations))
+
+		// Convert protobuf types to internal types
+		primary := csstructs.ReplicaIdentifier{
+			ID:              chunk.Primary.ServerId,
+			Hostname:        chunk.Primary.Hostname,
+			DataPort:        int(chunk.Primary.DataPort),
+			ReplicationPort: int(chunk.Primary.ReplicationPort),
+		}
+
+		var replicas []csstructs.ReplicaIdentifier
+		for _, loc := range chunk.Locations {
+			if loc.ServerId != chunk.Primary.ServerId {
+				replicas = append(replicas, csstructs.ReplicaIdentifier{
+					ID:              loc.ServerId,
+					Hostname:        loc.Hostname,
+					DataPort:        int(loc.DataPort),
+					ReplicationPort: int(loc.ReplicationPort),
+				})
+			}
+		}
+
+		if err := performWrite(primary, replicas, chunk.ChunkHandle, writeData, writeOffset); err != nil {
+			log.Fatalf("Write failed: %v", err)
+		}
+	}
+
+	if doRead {
+		log.Println("")
+		log.Println("=== Read Operation ===")
+
+		// Get chunk locations for reading
+		log.Printf("Getting chunk locations for file: %s", filePath)
+		locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: filePath})
+		if err != nil {
+			log.Fatalf("Failed to get chunk locations: %v", err)
+		}
+		if !locResp.Success {
+			log.Fatalf("Get chunk locations failed: %s", locResp.Message)
+		}
+
+		if len(locResp.Chunks) == 0 {
+			log.Fatal("No chunks found for file")
+		}
+
+		// Read from first chunk (for simplicity)
+		chunk := locResp.Chunks[0]
+		log.Printf("Reading chunk: %s", chunk.ChunkHandle)
+
+		// Pick a replica to read from (primary for now)
+		var readServer *pb.ChunkServerInfo
+		if chunk.Primary != nil {
+			readServer = chunk.Primary
+		} else if len(chunk.Locations) > 0 {
+			readServer = chunk.Locations[0]
+		} else {
+			log.Fatal("No available servers for chunk")
+		}
+
+		primary := csstructs.ReplicaIdentifier{
+			ID:              readServer.ServerId,
+			Hostname:        readServer.Hostname,
+			DataPort:        int(readServer.DataPort),
+			ReplicationPort: int(readServer.ReplicationPort),
+		}
+
+		readData, err := performRead(primary, chunk.ChunkHandle)
+		if err != nil {
+			log.Fatalf("Read failed: %v", err)
+		}
+
+		if outputFile != "" {
+			if err := os.WriteFile(outputFile, readData, 0644); err != nil {
+				log.Fatalf("Failed to write output file: %v", err)
+			}
+			log.Printf("Wrote %d bytes to %s", len(readData), outputFile)
+		} else {
+			log.Printf("Read data: '%s'", string(readData))
+		}
+	}
+
+	log.Println("Done")
+}
+
+func runStandalone(writeData []byte) {
+	log.Println("Running in standalone mode (no master)")
+
+	// Define replica topology manually
 	primary := csstructs.ReplicaIdentifier{
 		ID:              "replica1",
 		Hostname:        host,
@@ -69,23 +258,9 @@ func main() {
 
 	replicas := []csstructs.ReplicaIdentifier{r2, r3}
 
-	var writeData []byte
-
 	if doWrite {
-		// Get data to write
-		if inputFile != "" {
-			fileData, err := os.ReadFile(inputFile)
-			if err != nil {
-				log.Fatalf("Failed to read input file: %v", err)
-			}
-			writeData = fileData
-			log.Printf("Read %d bytes from %s", len(writeData), inputFile)
-		} else {
-			writeData = []byte(data)
-		}
-
 		log.Println("=== Write Operation ===")
-		if err := performWrite(primary, replicas, chunkHandle, writeData); err != nil {
+		if err := performWrite(primary, replicas, chunkHandle, writeData, writeOffset); err != nil {
 			log.Fatalf("Write failed: %v", err)
 		}
 	}
@@ -111,7 +286,7 @@ func main() {
 	log.Println("Done")
 }
 
-func performWrite(primary csstructs.ReplicaIdentifier, replicas []csstructs.ReplicaIdentifier, chunkHandle string, data []byte) error {
+func performWrite(primary csstructs.ReplicaIdentifier, replicas []csstructs.ReplicaIdentifier, chunkHandle string, data []byte, offset int64) error {
 	log.Printf("Connecting to primary at %s:%d", primary.Hostname, primary.DataPort)
 	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", primary.Hostname, primary.DataPort))
 	if err != nil {
@@ -127,13 +302,18 @@ func performWrite(primary csstructs.ReplicaIdentifier, replicas []csstructs.Repl
 		return fmt.Errorf("failed to send action: %w", err)
 	}
 
-	log.Printf("Writing to chunk=%s, size=%d bytes", chunkHandle, len(data))
+	if offset >= 0 {
+		log.Printf("Random write to chunk=%s at offset=%d, size=%d bytes", chunkHandle, offset, len(data))
+	} else {
+		log.Printf("Append to chunk=%s, size=%d bytes", chunkHandle, len(data))
+	}
 
 	// Create JWT with write metadata
 	claims := csstructs.DownloadRequestClaims{
 		ChunkHandle: chunkHandle,
 		Operation:   "download",
 		Filesize:    uint64(len(data)),
+		Offset:      offset,
 		Replicas:    replicas,
 		Primary:     primary,
 	}
@@ -166,8 +346,8 @@ func performWrite(primary csstructs.ReplicaIdentifier, replicas []csstructs.Repl
 	if _, err = conn.Read(offsetBytes); err != nil {
 		return fmt.Errorf("failed to receive offset: %w", err)
 	}
-	offset := binary.BigEndian.Uint64(offsetBytes)
-	log.Printf("Allocated offset: %d", offset)
+	allocatedOffset := binary.BigEndian.Uint64(offsetBytes)
+	log.Printf("Allocated offset: %d", allocatedOffset)
 
 	// Send data payload
 	log.Printf("Sending data payload: %d bytes", len(data))
@@ -188,7 +368,7 @@ func performWrite(primary csstructs.ReplicaIdentifier, replicas []csstructs.Repl
 	}
 
 	if resultBytes[0] == 1 {
-		log.Printf("SUCCESS: Data persisted to chunk %s at offset %d", chunkHandle, offset)
+		log.Printf("SUCCESS: Data persisted to chunk %s at offset %d", chunkHandle, allocatedOffset)
 		return nil
 	}
 

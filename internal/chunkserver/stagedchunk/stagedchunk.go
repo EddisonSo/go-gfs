@@ -14,27 +14,29 @@ import (
 
 type StagedChunk struct {
 	ChunkHandle string
-	OpId string
-	buf []byte
-	pos int
-	mux sync.Mutex
-	Offset uint64
-	Status csstructs.Status
-	ready uint8
-	storageDir string
+	OpId        string
+	buf         []byte
+	pos         int
+	mux         sync.Mutex
+	Offset      uint64
+	Sequence    uint64
+	Status      csstructs.Status
+	ready       uint8
+	storageDir  string
 }
 
-func NewStagedChunk(chunkHandle string, opId string, size uint64, offset uint64, storageDir string) *StagedChunk {
+func NewStagedChunk(chunkHandle string, opId string, size uint64, offset uint64, sequence uint64, storageDir string) *StagedChunk {
 	return &StagedChunk{
 		ChunkHandle: chunkHandle,
-		OpId: opId,
-		buf: make([]byte, size),
-		pos: 0,
-		mux: sync.Mutex{},
-		Offset: offset,
-		Status: csstructs.READY,
-		ready: 0,
-		storageDir: storageDir,
+		OpId:        opId,
+		buf:         make([]byte, size),
+		pos:         0,
+		mux:         sync.Mutex{},
+		Offset:      offset,
+		Sequence:    sequence,
+		Status:      csstructs.READY,
+		ready:       0,
+		storageDir:  storageDir,
 	}
 }
 
