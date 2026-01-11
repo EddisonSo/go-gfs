@@ -1,4 +1,4 @@
-name: Build and Deploy (k3s)
+name: Build and Redeploy (k3s)
 
 on:
   push:
@@ -6,13 +6,17 @@ on:
 
 env:
   NS: default
-  IMAGE: docker.io/eddisonso/gfs-master
+  MASTER_IMAGE: docker.io/eddisonso/gfs-master
+  CHUNK_IMAGE: docker.io/eddisonso/gfs-chunkserver
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -23,25 +27,34 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & push image
+      - name: Build & push master image
         run: |
-          docker buildx build --push \
-            -t $IMAGE:${GITHUB_SHA} \
-            -t $IMAGE:latest \
-            -f ./deploy/master/Dockerfile ./deploy/master
+          docker buildx build \
+            --platform linux/arm64,linux/amd64 \
+            -t $MASTER_IMAGE:${GITHUB_SHA} \
+            -t $MASTER_IMAGE:latest \
+            --push .
+
+      - name: Build & push chunkserver image
+        run: |
+          docker buildx build \
+            --platform linux/arm64,linux/amd64 \
+            -t $CHUNK_IMAGE:${GITHUB_SHA} \
+            -t $CHUNK_IMAGE:latest \
+            --push .
 
       - name: Configure kubectl
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.GFS_CI_KUBECONFIG_B64 }}" | base64 -d > ~/.kube/config
           chmod 600 ~/.kube/config
-          kubectl version --client
           kubectl -n $NS get deploy gfs-master
+          kubectl -n $NS get ds gfs-chunkserver
 
-      - name: Rollout new image
+      # Option A: keep your exact "rollout restart" approach
+      - name: Rollout restart
         run: |
-          set -euo pipefail
-          kubectl -n $NS set image deployment/gfs-master \
-            gfs-master=$IMAGE:${GITHUB_SHA}
+          kubectl -n $NS rollout restart deployment/gfs-master
           kubectl -n $NS rollout status deployment/gfs-master --timeout=180s
-
+          kubectl -n $NS rollout restart daemonset/gfs-chunkserver
+          kubectl -n $NS rollout status daemonset/gfs-chunkserver --timeout=180s
