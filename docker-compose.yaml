@@ -13,6 +13,14 @@ services:
       timeout: 5s
       retries: 5
       start_period: 5s
+    develop:
+      watch:
+        - action: rebuild
+          path: ./cmd/master
+        - action: rebuild
+          path: ./internal/master
+        - action: rebuild
+          path: ./proto
 
   chunkserver1:
     image: gfs-chunkserver
@@ -27,6 +35,14 @@ services:
     depends_on:
       master:
         condition: service_healthy
+    develop:
+      watch:
+        - action: rebuild
+          path: ./cmd/chunkserver
+        - action: rebuild
+          path: ./internal/chunkserver
+        - action: rebuild
+          path: ./proto
 
   chunkserver2:
     image: gfs-chunkserver
@@ -41,6 +57,14 @@ services:
     depends_on:
       master:
         condition: service_healthy
+    develop:
+      watch:
+        - action: rebuild
+          path: ./cmd/chunkserver
+        - action: rebuild
+          path: ./internal/chunkserver
+        - action: rebuild
+          path: ./proto
 
   chunkserver3:
     image: gfs-chunkserver
@@ -55,3 +79,11 @@ services:
     depends_on:
       master:
         condition: service_healthy
+    develop:
+      watch:
+        - action: rebuild
+          path: ./cmd/chunkserver
+        - action: rebuild
+          path: ./internal/chunkserver
+        - action: rebuild
+          path: ./proto

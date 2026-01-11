@@ -1,13 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
-	"flag"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	pb "eddisonso.com/go-gfs/gen/master"
@@ -18,119 +19,152 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-var masterAddr string
+var (
+	masterAddr string
+	client     pb.MasterClient
+	conn       *grpc.ClientConn
+)
 
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
-	}
+	masterAddr = "localhost:9000"
 
-	// Global flags
-	globalFlags := flag.NewFlagSet("global", flag.ExitOnError)
-	globalFlags.StringVar(&masterAddr, "master", "localhost:9000", "Master server address")
-
-	// Find the command position (skip global flags)
-	cmdIdx := 1
-	for cmdIdx < len(os.Args) && os.Args[cmdIdx][0] == '-' {
-		cmdIdx++
-		// Skip flag value if it's a separate arg
-		if cmdIdx < len(os.Args) && os.Args[cmdIdx-1] != "-master" {
-			continue
-		}
-		if cmdIdx < len(os.Args) && os.Args[cmdIdx][0] != '-' {
-			cmdIdx++
+	// Check for -master flag
+	for i, arg := range os.Args[1:] {
+		if arg == "-master" && i+2 < len(os.Args) {
+			masterAddr = os.Args[i+2]
 		}
 	}
 
-	// Parse global flags before command
-	if cmdIdx > 1 {
-		globalFlags.Parse(os.Args[1:cmdIdx])
-	}
-
-	if cmdIdx >= len(os.Args) {
-		printUsage()
-		os.Exit(1)
-	}
-
-	cmd := os.Args[cmdIdx]
-	args := os.Args[cmdIdx+1:]
-
-	switch cmd {
-	case "ls":
-		cmdLs(args)
-	case "read", "cat":
-		cmdRead(args)
-	case "write":
-		cmdWrite(args)
-	case "rm":
-		cmdRm(args)
-	case "info":
-		cmdInfo(args)
-	case "help":
-		printUsage()
-	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
-		printUsage()
-		os.Exit(1)
-	}
-}
-
-func printUsage() {
-	fmt.Println(`GFS Client - Google File System CLI
-
-Usage:
-  gfs [global flags] <command> [arguments]
-
-Global Flags:
-  -master string    Master server address (default "localhost:9000")
-
-Commands:
-  ls                List all files
-  read <path>       Read a file from GFS
-  write <path>      Write data to a file in GFS
-  rm <path>         Delete a file
-  info <path>       Show file information
-  help              Show this help message
-
-Examples:
-  gfs ls
-  gfs write /myfile.txt -data "Hello World"
-  gfs write /myfile.txt -input localfile.txt
-  gfs read /myfile.txt
-  gfs read /myfile.txt -output localfile.txt
-  gfs rm /myfile.txt
-  gfs info /myfile.txt`)
-}
-
-func connectMaster() (pb.MasterClient, *grpc.ClientConn, context.Context, context.CancelFunc) {
-	conn, err := grpc.NewClient(masterAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Connect to master
+	var err error
+	conn, err = grpc.NewClient(masterAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to master: %v\n", err)
 		os.Exit(1)
 	}
+	defer conn.Close()
 
-	client := pb.NewMasterClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	client = pb.NewMasterClient(conn)
 
-	return client, conn, ctx, cancel
+	fmt.Printf("GFS Client - Connected to %s\n", masterAddr)
+	fmt.Println("Type 'help' for commands, 'exit' to quit")
+	fmt.Println()
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Print("gfs> ")
+		if !scanner.Scan() {
+			break
+		}
+
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		args := parseArgs(line)
+		if len(args) == 0 {
+			continue
+		}
+
+		cmd := args[0]
+		cmdArgs := args[1:]
+
+		switch cmd {
+		case "ls":
+			cmdLs(cmdArgs)
+		case "read", "cat":
+			cmdRead(cmdArgs)
+		case "write":
+			cmdWrite(cmdArgs)
+		case "rm":
+			cmdRm(cmdArgs)
+		case "info":
+			cmdInfo(cmdArgs)
+		case "help":
+			printHelp()
+		case "exit", "quit":
+			fmt.Println("Goodbye!")
+			return
+		default:
+			fmt.Printf("Unknown command: %s\n", cmd)
+			fmt.Println("Type 'help' for available commands")
+		}
+	}
+}
+
+func parseArgs(line string) []string {
+	var args []string
+	var current strings.Builder
+	inQuote := false
+	quoteChar := rune(0)
+
+	for _, r := range line {
+		if inQuote {
+			if r == quoteChar {
+				inQuote = false
+			} else {
+				current.WriteRune(r)
+			}
+		} else {
+			if r == '"' || r == '\'' {
+				inQuote = true
+				quoteChar = r
+			} else if r == ' ' || r == '\t' {
+				if current.Len() > 0 {
+					args = append(args, current.String())
+					current.Reset()
+				}
+			} else {
+				current.WriteRune(r)
+			}
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+	return args
+}
+
+func printHelp() {
+	fmt.Println(`Commands:
+  ls                      List all files
+  read <path>             Read file to stdout
+  read <path> > <file>    Read file to local file
+  write <path> <data>     Write data to file
+  write <path> < <file>   Write local file to GFS
+  rm <path>               Delete a file
+  info <path>             Show file information
+  help                    Show this help
+  exit                    Quit the client
+
+Examples:
+  ls
+  write /hello.txt "Hello World"
+  read /hello.txt
+  info /hello.txt
+  rm /hello.txt`)
+}
+
+func getContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 30*time.Second)
 }
 
 // ============ ls command ============
 
 func cmdLs(args []string) {
-	fs := flag.NewFlagSet("ls", flag.ExitOnError)
-	prefix := fs.String("prefix", "", "Filter by path prefix")
-	fs.Parse(args)
-
-	client, conn, ctx, cancel := connectMaster()
-	defer conn.Close()
+	ctx, cancel := getContext()
 	defer cancel()
 
-	resp, err := client.ListFiles(ctx, &pb.ListFilesRequest{Prefix: *prefix})
+	prefix := ""
+	if len(args) > 0 {
+		prefix = args[0]
+	}
+
+	resp, err := client.ListFiles(ctx, &pb.ListFilesRequest{Prefix: prefix})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to list files: %v\n", err)
-		os.Exit(1)
+		fmt.Printf("Error: %v\n", err)
+		return
 	}
 
 	if len(resp.Files) == 0 {
@@ -146,34 +180,39 @@ func cmdLs(args []string) {
 // ============ read command ============
 
 func cmdRead(args []string) {
-	fs := flag.NewFlagSet("read", flag.ExitOnError)
-	output := fs.String("output", "", "Write to local file instead of stdout")
-	fs.Parse(args)
-
-	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: gfs read <path> [-output file]")
-		os.Exit(1)
+	if len(args) < 1 {
+		fmt.Println("Usage: read <path> [> localfile]")
+		return
 	}
-	path := fs.Arg(0)
 
-	client, conn, ctx, cancel := connectMaster()
-	defer conn.Close()
+	path := args[0]
+	var outputFile string
+
+	// Check for > redirect
+	for i, arg := range args {
+		if arg == ">" && i+1 < len(args) {
+			outputFile = args[i+1]
+			break
+		}
+	}
+
+	ctx, cancel := getContext()
 	defer cancel()
 
 	// Get chunk locations
 	locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: path})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to get chunk locations: %v\n", err)
-		os.Exit(1)
+		fmt.Printf("Error: %v\n", err)
+		return
 	}
 	if !locResp.Success {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", locResp.Message)
-		os.Exit(1)
+		fmt.Printf("Error: %s\n", locResp.Message)
+		return
 	}
 
 	if len(locResp.Chunks) == 0 {
-		fmt.Fprintln(os.Stderr, "No chunks found for file")
-		os.Exit(1)
+		fmt.Println("No chunks found for file")
+		return
 	}
 
 	// Read all chunks and concatenate
@@ -185,8 +224,8 @@ func cmdRead(args []string) {
 		} else if len(chunk.Locations) > 0 {
 			server = chunk.Locations[0]
 		} else {
-			fmt.Fprintf(os.Stderr, "No available servers for chunk %s\n", chunk.ChunkHandle)
-			os.Exit(1)
+			fmt.Printf("No available servers for chunk %s\n", chunk.ChunkHandle)
+			return
 		}
 
 		replica := csstructs.ReplicaIdentifier{
@@ -198,66 +237,67 @@ func cmdRead(args []string) {
 
 		data, err := performRead(replica, chunk.ChunkHandle)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to read chunk %s: %v\n", chunk.ChunkHandle, err)
-			os.Exit(1)
+			fmt.Printf("Failed to read chunk %s: %v\n", chunk.ChunkHandle, err)
+			return
 		}
 		allData = append(allData, data...)
 	}
 
-	if *output != "" {
-		if err := os.WriteFile(*output, allData, 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to write output file: %v\n", err)
-			os.Exit(1)
+	if outputFile != "" {
+		if err := os.WriteFile(outputFile, allData, 0644); err != nil {
+			fmt.Printf("Failed to write file: %v\n", err)
+			return
 		}
-		fmt.Fprintf(os.Stderr, "Wrote %d bytes to %s\n", len(allData), *output)
+		fmt.Printf("Wrote %d bytes to %s\n", len(allData), outputFile)
 	} else {
-		os.Stdout.Write(allData)
+		fmt.Print(string(allData))
+		if len(allData) > 0 && allData[len(allData)-1] != '\n' {
+			fmt.Println()
+		}
 	}
 }
 
 // ============ write command ============
 
 func cmdWrite(args []string) {
-	fs := flag.NewFlagSet("write", flag.ExitOnError)
-	data := fs.String("data", "", "Data string to write")
-	input := fs.String("input", "", "Read data from local file")
-	offset := fs.Int64("offset", -1, "Write at specific offset (-1 for append)")
-	fs.Parse(args)
-
-	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: gfs write <path> [-data string | -input file] [-offset n]")
-		os.Exit(1)
+	if len(args) < 1 {
+		fmt.Println("Usage: write <path> <data>  OR  write <path> < localfile")
+		return
 	}
-	path := fs.Arg(0)
 
-	// Get write data
+	path := args[0]
 	var writeData []byte
-	if *input != "" {
-		var err error
-		writeData, err = os.ReadFile(*input)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to read input file: %v\n", err)
-			os.Exit(1)
+
+	// Check for < redirect
+	inputFile := ""
+	for i, arg := range args {
+		if arg == "<" && i+1 < len(args) {
+			inputFile = args[i+1]
+			break
 		}
-	} else if *data != "" {
-		writeData = []byte(*data)
+	}
+
+	if inputFile != "" {
+		var err error
+		writeData, err = os.ReadFile(inputFile)
+		if err != nil {
+			fmt.Printf("Failed to read file: %v\n", err)
+			return
+		}
+	} else if len(args) > 1 && args[1] != "<" {
+		// Join remaining args as data
+		writeData = []byte(strings.Join(args[1:], " "))
 	} else {
-		// Read from stdin
-		var err error
-		writeData, err = io.ReadAll(os.Stdin)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to read from stdin: %v\n", err)
-			os.Exit(1)
-		}
+		fmt.Println("Usage: write <path> <data>  OR  write <path> < localfile")
+		return
 	}
 
 	if len(writeData) == 0 {
-		fmt.Fprintln(os.Stderr, "No data to write")
-		os.Exit(1)
+		fmt.Println("No data to write")
+		return
 	}
 
-	client, conn, ctx, cancel := connectMaster()
-	defer conn.Close()
+	ctx, cancel := getContext()
 	defer cancel()
 
 	// Create file if it doesn't exist
@@ -279,12 +319,12 @@ func cmdWrite(args []string) {
 	if chunk == nil {
 		allocResp, err := client.AllocateChunk(ctx, &pb.AllocateChunkRequest{Path: path})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to allocate chunk: %v\n", err)
-			os.Exit(1)
+			fmt.Printf("Failed to allocate chunk: %v\n", err)
+			return
 		}
 		if !allocResp.Success {
-			fmt.Fprintf(os.Stderr, "Chunk allocation failed: %s\n", allocResp.Message)
-			os.Exit(1)
+			fmt.Printf("Chunk allocation failed: %s\n", allocResp.Message)
+			return
 		}
 		chunk = allocResp.Chunk
 	}
@@ -309,38 +349,34 @@ func cmdWrite(args []string) {
 		}
 	}
 
-	if err := performWrite(primary, replicas, chunk.ChunkHandle, writeData, *offset); err != nil {
-		fmt.Fprintf(os.Stderr, "Write failed: %v\n", err)
-		os.Exit(1)
+	if err := performWrite(primary, replicas, chunk.ChunkHandle, writeData, -1); err != nil {
+		fmt.Printf("Write failed: %v\n", err)
+		return
 	}
 
-	fmt.Fprintf(os.Stderr, "Wrote %d bytes to %s\n", len(writeData), path)
+	fmt.Printf("Wrote %d bytes to %s\n", len(writeData), path)
 }
 
 // ============ rm command ============
 
 func cmdRm(args []string) {
-	fs := flag.NewFlagSet("rm", flag.ExitOnError)
-	fs.Parse(args)
-
-	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: gfs rm <path>")
-		os.Exit(1)
+	if len(args) < 1 {
+		fmt.Println("Usage: rm <path>")
+		return
 	}
-	path := fs.Arg(0)
+	path := args[0]
 
-	client, conn, ctx, cancel := connectMaster()
-	defer conn.Close()
+	ctx, cancel := getContext()
 	defer cancel()
 
 	resp, err := client.DeleteFile(ctx, &pb.DeleteFileRequest{Path: path})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to delete file: %v\n", err)
-		os.Exit(1)
+		fmt.Printf("Error: %v\n", err)
+		return
 	}
 	if !resp.Success {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Message)
-		os.Exit(1)
+		fmt.Printf("Error: %s\n", resp.Message)
+		return
 	}
 
 	fmt.Printf("Deleted %s\n", path)
@@ -349,28 +385,24 @@ func cmdRm(args []string) {
 // ============ info command ============
 
 func cmdInfo(args []string) {
-	fs := flag.NewFlagSet("info", flag.ExitOnError)
-	fs.Parse(args)
-
-	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: gfs info <path>")
-		os.Exit(1)
+	if len(args) < 1 {
+		fmt.Println("Usage: info <path>")
+		return
 	}
-	path := fs.Arg(0)
+	path := args[0]
 
-	client, conn, ctx, cancel := connectMaster()
-	defer conn.Close()
+	ctx, cancel := getContext()
 	defer cancel()
 
 	// Get file info
 	fileResp, err := client.GetFile(ctx, &pb.GetFileRequest{Path: path})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to get file: %v\n", err)
-		os.Exit(1)
+		fmt.Printf("Error: %v\n", err)
+		return
 	}
 	if !fileResp.Success {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", fileResp.Message)
-		os.Exit(1)
+		fmt.Printf("Error: %s\n", fileResp.Message)
+		return
 	}
 
 	f := fileResp.File
@@ -381,7 +413,7 @@ func cmdInfo(args []string) {
 
 	// Get chunk locations
 	locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: path})
-	if err == nil && locResp.Success {
+	if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
 		fmt.Println("\nChunk Details:")
 		for i, chunk := range locResp.Chunks {
 			fmt.Printf("  [%d] %s (%d bytes)\n", i, chunk.ChunkHandle, chunk.Size)
