@@ -2,3 +2,6 @@ build/
 gen/
 tmp/
 data/
+
+CLAUDE.md
+TODO.md
