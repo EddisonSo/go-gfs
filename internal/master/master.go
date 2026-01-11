@@ -36,6 +36,13 @@ type ChunkLocation struct {
 	ReplicationPort int
 	LastHeartbeat   time.Time
 	Resources       *ResourceMetrics // Current resource usage
+	BuildInfo       *BuildInfo       // Build version info
+}
+
+// BuildInfo contains build version information
+type BuildInfo struct {
+	BuildID   string
+	BuildTime string
 }
 
 // ChunkStatus represents the state of a chunk
@@ -160,6 +167,14 @@ func (m *Master) replayWAL(walPath string) error {
 			}
 			m.replayDeleteFile(data.Path)
 
+		case wal.OpRenameFile:
+			var data wal.RenameFileData
+			if err := json.Unmarshal(entry.Data, &data); err != nil {
+				slog.Warn("failed to unmarshal RENAME_FILE", "error", err)
+				continue
+			}
+			m.replayRenameFile(data.OldPath, data.NewPath)
+
 		case wal.OpAddChunk:
 			var data wal.AddChunkData
 			if err := json.Unmarshal(entry.Data, &data); err != nil {
@@ -208,6 +223,23 @@ func (m *Master) replayDeleteFile(path string) {
 	}
 }
 
+// replayRenameFile renames a file from WAL (no WAL logging)
+func (m *Master) replayRenameFile(oldPath, newPath string) {
+	if file, exists := m.files[oldPath]; exists {
+		// Update file path
+		file.Path = newPath
+		// Move to new key
+		m.files[newPath] = file
+		delete(m.files, oldPath)
+		// Update chunk back-references
+		for _, handle := range file.Chunks {
+			if chunk, ok := m.chunks[handle]; ok {
+				chunk.FilePath = newPath
+			}
+		}
+	}
+}
+
 // replayAddChunk adds a chunk from WAL (no WAL logging)
 func (m *Master) replayAddChunk(path, chunkHandle string) {
 	handle := ChunkHandle(chunkHandle)
@@ -251,7 +283,7 @@ func (m *Master) Close() error {
 }
 
 // RegisterChunkServer registers a chunkserver with the master
-func (m *Master) RegisterChunkServer(id ChunkServerID, hostname string, dataPort, replicationPort int) {
+func (m *Master) RegisterChunkServer(id ChunkServerID, hostname string, dataPort, replicationPort int, buildInfo *BuildInfo) {
 	m.csMu.Lock()
 	defer m.csMu.Unlock()
 
@@ -261,9 +293,14 @@ func (m *Master) RegisterChunkServer(id ChunkServerID, hostname string, dataPort
 		DataPort:        dataPort,
 		ReplicationPort: replicationPort,
 		LastHeartbeat:   time.Now(),
+		BuildInfo:       buildInfo,
 	}
 	m.chunkservers[id] = loc
-	slog.Info("registered chunkserver", "id", id, "hostname", hostname, "dataPort", dataPort)
+	buildID := "unknown"
+	if buildInfo != nil {
+		buildID = buildInfo.BuildID
+	}
+	slog.Info("registered chunkserver", "id", id, "hostname", hostname, "dataPort", dataPort, "build", buildID)
 }
 
 // Heartbeat updates the last heartbeat time and resource metrics for a chunkserver
@@ -475,6 +512,48 @@ func (m *Master) DeleteFile(path string) error {
 	m.chunkMu.Unlock()
 
 	slog.Info("deleted file", "path", path, "chunks", len(chunkHandles))
+	return nil
+}
+
+// RenameFile renames/moves a file from oldPath to newPath
+func (m *Master) RenameFile(oldPath, newPath string) error {
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+
+	// Check source exists
+	file, exists := m.files[oldPath]
+	if !exists {
+		return fmt.Errorf("file not found: %s", oldPath)
+	}
+
+	// Check destination doesn't exist
+	if _, exists := m.files[newPath]; exists {
+		return fmt.Errorf("file already exists: %s", newPath)
+	}
+
+	// Log to WAL before applying
+	if err := m.wal.LogRenameFile(oldPath, newPath); err != nil {
+		return fmt.Errorf("WAL write failed: %w", err)
+	}
+
+	// Update file path
+	file.Path = newPath
+	file.ModifiedAt = time.Now()
+
+	// Move to new key
+	m.files[newPath] = file
+	delete(m.files, oldPath)
+
+	// Update chunk back-references
+	m.chunkMu.Lock()
+	for _, handle := range file.Chunks {
+		if chunk, ok := m.chunks[handle]; ok {
+			chunk.FilePath = newPath
+		}
+	}
+	m.chunkMu.Unlock()
+
+	slog.Info("renamed file", "oldPath", oldPath, "newPath", newPath)
 	return nil
 }
 

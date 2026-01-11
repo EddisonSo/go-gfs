@@ -8,20 +8,28 @@ PROTO_FILES := $(wildcard $(PROTO_DIR)/**/*.proto)
 PROTOC_GEN_GO := $(shell which protoc-gen-go)
 PROTOC_GEN_GO_GRPC := $(shell which protoc-gen-go-grpc)
 
+# Build info - can be overridden by environment variables
+BUILD_ID ?= $(shell head -c 16 /dev/urandom 2>/dev/null | md5sum 2>/dev/null | head -c 8 || echo "local")
+BUILD_TIME ?= $(shell date -u '+%Y-%m-%d_%H:%M:%S')
+
+# Linker flags to inject build info
+LDFLAGS := -X 'eddisonso.com/go-gfs/internal/buildinfo.BuildID=$(BUILD_ID)' \
+           -X 'eddisonso.com/go-gfs/internal/buildinfo.BuildTime=$(BUILD_TIME)'
+
 # Main build targets
 all: proto chunkserver master client
 
 chunkserver:
 	mkdir -p build
-	go build -o ./build/chunkserver ./cmd/chunkserver/
+	go build -ldflags "$(LDFLAGS)" -o ./build/chunkserver ./cmd/chunkserver/
 
 master:
 	mkdir -p build
-	go build -o ./build/master ./cmd/master/
+	go build -ldflags "$(LDFLAGS)" -o ./build/master ./cmd/master/
 
 client:
 	mkdir -p build
-	go build -o ./build/client ./cmd/client/
+	go build -ldflags "$(LDFLAGS)" -o ./build/client ./cmd/client/
 
 proto: check-tools
 	@echo "Generating protobuf Go code..."

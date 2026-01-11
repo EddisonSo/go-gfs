@@ -17,6 +17,7 @@ type OpType string
 const (
 	OpCreateFile   OpType = "CREATE_FILE"
 	OpDeleteFile   OpType = "DELETE_FILE"
+	OpRenameFile   OpType = "RENAME_FILE"
 	OpAddChunk     OpType = "ADD_CHUNK"
 	OpCommitChunk  OpType = "COMMIT_CHUNK"
 	OpSetCounter   OpType = "SET_COUNTER"
@@ -37,6 +38,12 @@ type CreateFileData struct {
 // DeleteFileData represents data for DELETE_FILE operation
 type DeleteFileData struct {
 	Path string `json:"path"`
+}
+
+// RenameFileData represents data for RENAME_FILE operation
+type RenameFileData struct {
+	OldPath string `json:"old_path"`
+	NewPath string `json:"new_path"`
 }
 
 // AddChunkData represents data for ADD_CHUNK operation
@@ -122,6 +129,12 @@ func (w *WAL) LogCreateFile(path string, chunkSize uint64) error {
 func (w *WAL) LogDeleteFile(path string) error {
 	data, _ := json.Marshal(DeleteFileData{Path: path})
 	return w.append(Entry{Op: OpDeleteFile, Data: data})
+}
+
+// LogRenameFile logs a RENAME_FILE operation
+func (w *WAL) LogRenameFile(oldPath, newPath string) error {
+	data, _ := json.Marshal(RenameFileData{OldPath: oldPath, NewPath: newPath})
+	return w.append(Entry{Op: OpRenameFile, Data: data})
 }
 
 // LogAddChunk logs an ADD_CHUNK operation

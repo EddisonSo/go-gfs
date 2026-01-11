@@ -256,14 +256,24 @@ func main() {
 	var err error
 	conn, err = grpc.NewClient(masterAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect to master: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to create connection: %v\n", err)
 		os.Exit(1)
 	}
 	defer conn.Close()
 
 	client = pb.NewMasterClient(conn)
 
-	fmt.Printf("GFS Client - Connected to %s\n", masterAddr)
+	// Verify connection by making a test RPC call
+	fmt.Printf("Connecting to master at %s...\n", masterAddr)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	_, err = client.ListFiles(ctx, &pb.ListFilesRequest{})
+	cancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to connect to master: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Connected to %s\n", masterAddr)
 	fmt.Println("Type 'help' for commands, 'exit' to quit")
 	fmt.Println()
 
@@ -294,6 +304,8 @@ func main() {
 			cmdRead(cmdArgs)
 		case "write":
 			cmdWrite(cmdArgs)
+		case "mv", "rename":
+			cmdMv(cmdArgs)
 		case "rm":
 			cmdRm(cmdArgs)
 		case "info":
@@ -352,19 +364,12 @@ func printHelp() {
   read <path> > <file>    Read file to local file
   write <path> <data>     Write data to file
   write <path> < <file>   Write local file to GFS
+  mv <src> <dst>          Rename/move a file
   rm <path>               Delete a file
   info <path>             Show file information
   pressure                Show cluster resource pressure (CPU, memory, disk)
   help                    Show this help
-  exit                    Quit the client
-
-Examples:
-  ls
-  write /hello.txt "Hello World"
-  read /hello.txt
-  info /hello.txt
-  rm /hello.txt
-  pressure`)
+  exit                    Quit the client`)
 }
 
 func getContext() (context.Context, context.CancelFunc) {
@@ -903,6 +908,32 @@ func cmdRm(args []string) {
 	fmt.Printf("Deleted %s\n", path)
 }
 
+// ============ mv command ============
+
+func cmdMv(args []string) {
+	if len(args) < 2 {
+		fmt.Println("Usage: mv <source> <destination>")
+		return
+	}
+	oldPath := args[0]
+	newPath := args[1]
+
+	ctx, cancel := getContext()
+	defer cancel()
+
+	resp, err := client.RenameFile(ctx, &pb.RenameFileRequest{OldPath: oldPath, NewPath: newPath})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+	if !resp.Success {
+		fmt.Printf("Error: %s\n", resp.Message)
+		return
+	}
+
+	fmt.Printf("Renamed %s -> %s\n", oldPath, newPath)
+}
+
 // ============ info command ============
 
 func cmdInfo(args []string) {
@@ -962,14 +993,20 @@ func cmdPressure(args []string) {
 		return
 	}
 
+	fmt.Println("Cluster Status")
+	fmt.Println("==============")
+	fmt.Println()
+
+	// Show master build info
+	if resp.MasterBuildInfo != nil {
+		fmt.Printf("Master Build: %s (%s)\n", resp.MasterBuildInfo.BuildId, resp.MasterBuildInfo.BuildTime)
+	}
+	fmt.Println()
+
 	if len(resp.Servers) == 0 {
 		fmt.Println("No chunkservers registered")
 		return
 	}
-
-	fmt.Println("Cluster Resource Pressure")
-	fmt.Println("=========================")
-	fmt.Println()
 
 	for _, server := range resp.Servers {
 		status := "ALIVE"
@@ -982,6 +1019,11 @@ func cmdPressure(args []string) {
 			server.Server.Hostname,
 			server.Server.DataPort,
 			status)
+
+		// Show build info
+		if server.BuildInfo != nil {
+			fmt.Printf("  Build:  %s (%s)\n", server.BuildInfo.BuildId, server.BuildInfo.BuildTime)
+		}
 		fmt.Printf("  Chunks: %d\n", server.ChunkCount)
 
 		if server.Resources != nil {

@@ -1,7 +1,7 @@
-FROM golang:1.23 AS builder
+FROM golang:1.24 AS builder
 WORKDIR /app
 
-# Install protobuf compiler first
+# Install protobuf compiler
 RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
 # Copy go module files and download dependencies
@@ -18,19 +18,26 @@ ENV PATH="${PATH}:/go/bin"
 # Copy source code
 COPY . .
 
-# Generate protobuf files and build all binaries
-RUN make proto
-RUN make chunkserver
-RUN make master
+# Generate unique build ID and timestamp at build time, save to file for labels
+RUN BUILD_ID=$(head -c 16 /dev/urandom | md5sum | head -c 8) && \
+    BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S') && \
+    echo "$BUILD_ID" > /tmp/build_id && \
+    echo "$BUILD_TIME" > /tmp/build_time && \
+    make proto && \
+    BUILD_ID=$BUILD_ID BUILD_TIME=$BUILD_TIME make all
 
 FROM debian:bookworm-slim
 WORKDIR /root/
+
+# Copy build info for labels
+COPY --from=builder /tmp/build_id /tmp/build_time /tmp/
 
 # Install netcat for healthchecks
 RUN apt-get update && apt-get install -y netcat-openbsd && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/build/chunkserver ./chunkserver
 COPY --from=builder /app/build/master ./master
+COPY --from=builder /app/build/client ./client
 
 EXPOSE 8080
 EXPOSE 8081

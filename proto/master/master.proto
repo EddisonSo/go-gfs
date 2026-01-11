@@ -3,6 +3,12 @@ syntax = "proto3";
 package master.v1;
 option go_package = "eddisonso.com/go-gfs/gen/master;master";
 
+// Build information
+message BuildInfo {
+    string build_id = 1;
+    string build_time = 2;
+}
+
 // ChunkServer location info
 message ChunkServerInfo {
     string server_id = 1;
@@ -47,6 +53,7 @@ message RegisterRequest {
     int32 data_port = 3;
     int32 replication_port = 4;
     repeated string chunk_handles = 5;  // Chunks this server has
+    BuildInfo build_info = 6;           // Build information
 }
 
 message RegisterResponse {
@@ -120,6 +127,16 @@ message DeleteFileResponse {
     string message = 2;
 }
 
+message RenameFileRequest {
+    string old_path = 1;
+    string new_path = 2;
+}
+
+message RenameFileResponse {
+    bool success = 1;
+    string message = 2;
+}
+
 message ListFilesRequest {
     string prefix = 1;  // Optional path prefix filter
 }
@@ -156,6 +173,7 @@ message ChunkServerStatus {
     ResourceMetrics resources = 2;
     int32 chunk_count = 3;           // Number of chunks on this server
     bool is_alive = 4;               // Whether server is responding to heartbeats
+    BuildInfo build_info = 5;        // Build information
 }
 
 // Get cluster resource pressure
@@ -163,6 +181,7 @@ message GetClusterPressureRequest {}
 
 message GetClusterPressureResponse {
     repeated ChunkServerStatus servers = 1;
+    BuildInfo master_build_info = 2;  // Master's build information
 }
 
 // Master service
@@ -177,6 +196,7 @@ service Master {
     rpc CreateFile(CreateFileRequest) returns (CreateFileResponse);
     rpc GetFile(GetFileRequest) returns (GetFileResponse);
     rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+    rpc RenameFile(RenameFileRequest) returns (RenameFileResponse);
     rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
 
     // Chunk operations

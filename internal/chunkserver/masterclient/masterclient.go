@@ -13,6 +13,7 @@ import (
 	"time"
 
 	pb "eddisonso.com/go-gfs/gen/master"
+	"eddisonso.com/go-gfs/internal/buildinfo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -110,6 +111,10 @@ func (mc *MasterClient) Register() error {
 		DataPort:        int32(mc.dataPort),
 		ReplicationPort: int32(mc.replicationPort),
 		ChunkHandles:    chunks,
+		BuildInfo: &pb.BuildInfo{
+			BuildId:   buildinfo.BuildID,
+			BuildTime: buildinfo.BuildTime,
+		},
 	})
 
 	if err != nil {
@@ -119,7 +124,7 @@ func (mc *MasterClient) Register() error {
 	if !resp.Success {
 		slog.Error("registration failed", "message", resp.Message)
 	} else {
-		slog.Info("registered with master", "serverID", mc.serverID, "chunks", len(chunks))
+		slog.Info("registered with master", "serverID", mc.serverID, "chunks", len(chunks), "build", buildinfo.BuildID)
 	}
 
 	return nil

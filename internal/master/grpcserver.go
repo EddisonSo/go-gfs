@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	pb "eddisonso.com/go-gfs/gen/master"
+	"eddisonso.com/go-gfs/internal/buildinfo"
 )
 
 // GRPCServer implements the Master gRPC service
@@ -26,11 +27,21 @@ func (s *GRPCServer) Register(ctx context.Context, req *pb.RegisterRequest) (*pb
 		"dataPort", req.DataPort,
 		"chunks", len(req.ChunkHandles))
 
+	// Convert build info
+	var bi *BuildInfo
+	if req.BuildInfo != nil {
+		bi = &BuildInfo{
+			BuildID:   req.BuildInfo.BuildId,
+			BuildTime: req.BuildInfo.BuildTime,
+		}
+	}
+
 	s.master.RegisterChunkServer(
 		ChunkServerID(req.ServerId),
 		req.Hostname,
 		int(req.DataPort),
 		int(req.ReplicationPort),
+		bi,
 	)
 
 	// Process chunk reports from registration
@@ -145,6 +156,22 @@ func (s *GRPCServer) DeleteFile(ctx context.Context, req *pb.DeleteFileRequest) 
 	return &pb.DeleteFileResponse{
 		Success: true,
 		Message: "file deleted",
+	}, nil
+}
+
+// RenameFile renames/moves a file
+func (s *GRPCServer) RenameFile(ctx context.Context, req *pb.RenameFileRequest) (*pb.RenameFileResponse, error) {
+	err := s.master.RenameFile(req.OldPath, req.NewPath)
+	if err != nil {
+		return &pb.RenameFileResponse{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
+
+	return &pb.RenameFileResponse{
+		Success: true,
+		Message: "file renamed",
 	}, nil
 }
 
@@ -322,10 +349,22 @@ func (s *GRPCServer) GetClusterPressure(ctx context.Context, req *pb.GetClusterP
 			}
 		}
 
+		// Add build info if available
+		if status.Location.BuildInfo != nil {
+			protoStatus.BuildInfo = &pb.BuildInfo{
+				BuildId:   status.Location.BuildInfo.BuildID,
+				BuildTime: status.Location.BuildInfo.BuildTime,
+			}
+		}
+
 		protoStatuses = append(protoStatuses, protoStatus)
 	}
 
 	return &pb.GetClusterPressureResponse{
 		Servers: protoStatuses,
+		MasterBuildInfo: &pb.BuildInfo{
+			BuildId:   buildinfo.BuildID,
+			BuildTime: buildinfo.BuildTime,
+		},
 	}, nil
 }
