@@ -2,13 +2,16 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	pb "eddisonso.com/go-gfs/gen/master"
@@ -183,6 +186,80 @@ func cmdLs(args []string) {
 
 // ============ read command ============
 
+// getServerLoads fetches cluster pressure and returns a map of server ID -> load score
+func getServerLoads(ctx context.Context) map[string]float64 {
+	loads := make(map[string]float64)
+
+	resp, err := client.GetClusterPressure(ctx, &pb.GetClusterPressureRequest{})
+	if err != nil {
+		return loads
+	}
+
+	for _, server := range resp.Servers {
+		if !server.IsAlive || server.Resources == nil {
+			continue
+		}
+		// Combined score: CPU 40%, Memory 40%, Disk 20%
+		r := server.Resources
+		score := r.CpuUsagePercent*0.4 + r.MemoryUsagePercent*0.4 + r.DiskUsagePercent*0.2
+		loads[server.Server.ServerId] = score
+	}
+
+	return loads
+}
+
+// selectReplicaByLoad selects a replica using weighted random selection
+// Servers with lower load have higher probability of being selected
+func selectReplicaByLoad(locations []*pb.ChunkServerInfo, loads map[string]float64) *pb.ChunkServerInfo {
+	if len(locations) == 0 {
+		return nil
+	}
+	if len(locations) == 1 {
+		return locations[0]
+	}
+
+	// Calculate weights (inverse of load, so lower load = higher weight)
+	type weightedServer struct {
+		server *pb.ChunkServerInfo
+		weight float64
+	}
+
+	servers := make([]weightedServer, 0, len(locations))
+	var totalWeight float64
+
+	for _, loc := range locations {
+		load, ok := loads[loc.ServerId]
+		if !ok {
+			load = 50 // Default to 50% if no data
+		}
+		// Weight is inverse of load: (100 - load) gives us 0-100 where higher = less loaded
+		// Add 1 to avoid zero weights
+		weight := (100 - load) + 1
+		servers = append(servers, weightedServer{server: loc, weight: weight})
+		totalWeight += weight
+	}
+
+	// Weighted random selection
+	r := rand.Float64() * totalWeight
+	var cumulative float64
+	for _, ws := range servers {
+		cumulative += ws.weight
+		if r <= cumulative {
+			return ws.server
+		}
+	}
+
+	// Fallback to last server
+	return servers[len(servers)-1].server
+}
+
+// chunkReadResult holds the result of reading a single chunk
+type chunkReadResult struct {
+	index int
+	data  []byte
+	err   error
+}
+
 func cmdRead(args []string) {
 	if len(args) < 1 {
 		fmt.Println("Usage: read <path> [> localfile]")
@@ -219,7 +296,73 @@ func cmdRead(args []string) {
 		return
 	}
 
-	// Set up output writer - either file or stdout
+	// Get server load information for weighted replica selection
+	loads := getServerLoads(ctx)
+
+	// Read all chunks in parallel
+	results := make(chan chunkReadResult, len(locResp.Chunks))
+	var wg sync.WaitGroup
+
+	for i, chunk := range locResp.Chunks {
+		wg.Add(1)
+		go func(index int, chunk *pb.ChunkLocationInfo) {
+			defer wg.Done()
+
+			// Select replica based on load (prefer less loaded servers)
+			var server *pb.ChunkServerInfo
+			if len(chunk.Locations) > 0 {
+				server = selectReplicaByLoad(chunk.Locations, loads)
+			} else if chunk.Primary != nil {
+				server = chunk.Primary
+			}
+
+			if server == nil {
+				results <- chunkReadResult{index: index, err: fmt.Errorf("no available servers for chunk %s", chunk.ChunkHandle)}
+				return
+			}
+
+			replica := csstructs.ReplicaIdentifier{
+				ID:              server.ServerId,
+				Hostname:        server.Hostname,
+				DataPort:        int(server.DataPort),
+				ReplicationPort: int(server.ReplicationPort),
+			}
+
+			// Read into buffer
+			var buf bytes.Buffer
+			_, err := performReadStream(replica, chunk.ChunkHandle, &buf)
+			if err != nil {
+				results <- chunkReadResult{index: index, err: fmt.Errorf("failed to read chunk %s from %s: %w", chunk.ChunkHandle, server.ServerId, err)}
+				return
+			}
+
+			results <- chunkReadResult{index: index, data: buf.Bytes()}
+		}(i, chunk)
+	}
+
+	// Close results channel when all goroutines complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	chunkData := make([][]byte, len(locResp.Chunks))
+	var readErr error
+	for result := range results {
+		if result.err != nil {
+			readErr = result.err
+			continue
+		}
+		chunkData[result.index] = result.data
+	}
+
+	if readErr != nil {
+		fmt.Printf("Error: %v\n", readErr)
+		return
+	}
+
+	// Set up output writer
 	var output io.Writer
 	var outFile *os.File
 	if outputFile != "" {
@@ -234,32 +377,15 @@ func cmdRead(args []string) {
 		output = os.Stdout
 	}
 
-	// Stream each chunk directly to output
+	// Write chunks in order
 	var totalBytes int64
-	for _, chunk := range locResp.Chunks {
-		var server *pb.ChunkServerInfo
-		if chunk.Primary != nil {
-			server = chunk.Primary
-		} else if len(chunk.Locations) > 0 {
-			server = chunk.Locations[0]
-		} else {
-			fmt.Printf("No available servers for chunk %s\n", chunk.ChunkHandle)
-			return
-		}
-
-		replica := csstructs.ReplicaIdentifier{
-			ID:              server.ServerId,
-			Hostname:        server.Hostname,
-			DataPort:        int(server.DataPort),
-			ReplicationPort: int(server.ReplicationPort),
-		}
-
-		written, err := performReadStream(replica, chunk.ChunkHandle, output)
+	for _, data := range chunkData {
+		n, err := output.Write(data)
 		if err != nil {
-			fmt.Printf("Failed to read chunk %s: %v\n", chunk.ChunkHandle, err)
+			fmt.Printf("Failed to write output: %v\n", err)
 			return
 		}
-		totalBytes += written
+		totalBytes += int64(n)
 	}
 
 	// Add newline to stdout if needed (for text files)
