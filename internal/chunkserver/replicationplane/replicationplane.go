@@ -59,6 +59,9 @@ func (rp *ReplicationPlane) Replicate(stream pb.Replicator_ReplicateServer) erro
 			slog.Info("starting replication", "chunkHandle", chunkHandle, "opID", opID, "length", length, "offset", offset, "sequence", sequence)
 
 			sc = stagedchunk.NewStagedChunk(chunkHandle, opID, length, offset, sequence, rp.config.Dir)
+			if sc == nil {
+				return errors.New("failed to create staged chunk")
+			}
 			chunkstagingtrackingservice.GetChunkStagingTrackingService().AddStagedChunk(sc)
 		case *pb.ReplicationFrame_Data:
 			if sc == nil {

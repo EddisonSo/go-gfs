@@ -12,72 +12,146 @@ import (
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 )
 
+// Threshold for using temp file vs memory buffer (1MB)
+const fileStagingThreshold = 1 << 20
+
 type StagedChunk struct {
 	ChunkHandle string
 	OpId        string
-	buf         []byte
-	pos         int
-	mux         sync.Mutex
-	Offset      uint64
-	Sequence    uint64
-	Status      csstructs.Status
-	ready       uint8
-	storageDir  string
+	// Memory buffer for small writes
+	buf []byte
+	pos int
+	// Temp file for large writes
+	tempFile   *os.File
+	useFile    bool
+	written    int64
+	size       uint64
+	mux        sync.Mutex
+	Offset     uint64
+	Sequence   uint64
+	Status     csstructs.Status
+	ready      uint8
+	storageDir string
 }
 
 func NewStagedChunk(chunkHandle string, opId string, size uint64, offset uint64, sequence uint64, storageDir string) *StagedChunk {
-	return &StagedChunk{
+	sc := &StagedChunk{
 		ChunkHandle: chunkHandle,
 		OpId:        opId,
-		buf:         make([]byte, size),
-		pos:         0,
-		mux:         sync.Mutex{},
+		size:        size,
 		Offset:      offset,
 		Sequence:    sequence,
 		Status:      csstructs.READY,
 		ready:       0,
 		storageDir:  storageDir,
 	}
+
+	// Use temp file for large writes, memory buffer for small ones
+	if size >= fileStagingThreshold {
+		if err := os.MkdirAll(storageDir, 0755); err != nil {
+			slog.Error("failed to create storage directory", "dir", storageDir, "error", err)
+			return nil
+		}
+
+		tempFile, err := os.CreateTemp(storageDir, "staged_"+opId+"_*")
+		if err != nil {
+			slog.Error("failed to create temp file for staging", "opId", opId, "error", err)
+			return nil
+		}
+
+		sc.tempFile = tempFile
+		sc.useFile = true
+		slog.Debug("using temp file for large write", "path", tempFile.Name(), "opId", opId, "size", size)
+	} else {
+		sc.buf = make([]byte, size)
+		sc.useFile = false
+		slog.Debug("using memory buffer for small write", "opId", opId, "size", size)
+	}
+
+	return sc
 }
 
 func (sc *StagedChunk) Write(p []byte) (int, error) {
 	sc.mux.Lock()
 	defer sc.mux.Unlock()
-	if sc.pos >= cap(sc.buf) {
-		return 0, io.EOF
+
+	if sc.useFile {
+		if sc.tempFile == nil {
+			return 0, fmt.Errorf("temp file not initialized")
+		}
+		n, err := sc.tempFile.Write(p)
+		if err != nil {
+			return n, err
+		}
+		sc.written += int64(n)
+		return n, nil
 	}
 
+	// Memory buffer path
+	if sc.pos >= len(sc.buf) {
+		return 0, io.EOF
+	}
 	n := copy(sc.buf[sc.pos:], p)
 	sc.pos += n
-
 	return n, nil
 }
 
 func (sc *StagedChunk) NewReader() io.Reader {
 	sc.mux.Lock()
 	defer sc.mux.Unlock()
-	return bytes.NewReader(sc.buf)
+
+	if sc.useFile {
+		if sc.tempFile == nil {
+			return nil
+		}
+		sc.tempFile.Seek(0, io.SeekStart)
+		return sc.tempFile
+	}
+
+	return bytes.NewReader(sc.buf[:sc.pos])
 }
 
 func (sc *StagedChunk) Bytes() []byte {
 	sc.mux.Lock()
 	defer sc.mux.Unlock()
-	cp := make([]byte, len(sc.buf))
-	copy(cp, sc.buf)
+
+	if sc.useFile {
+		if sc.tempFile == nil {
+			return nil
+		}
+		sc.tempFile.Seek(0, io.SeekStart)
+		data, err := io.ReadAll(sc.tempFile)
+		if err != nil {
+			slog.Error("failed to read temp file", "error", err)
+			return nil
+		}
+		return data
+	}
+
+	cp := make([]byte, sc.pos)
+	copy(cp, sc.buf[:sc.pos])
 	return cp
 }
 
 func (sc *StagedChunk) Len() uint64 {
 	sc.mux.Lock()
 	defer sc.mux.Unlock()
-	return uint64(len(sc.buf))
+	if sc.useFile {
+		return uint64(sc.written)
+	}
+	return uint64(sc.pos)
 }
 
 func (sc *StagedChunk) Cap() uint64 {
-	return uint64(cap(sc.buf))
+	return sc.size
 }
 
 func (sc *StagedChunk) Pos() uint64 {
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
+	if sc.useFile {
+		return uint64(sc.written)
+	}
 	return uint64(sc.pos)
 }
 
@@ -85,14 +159,20 @@ func (sc *StagedChunk) Commit() error {
 	sc.mux.Lock()
 	defer sc.mux.Unlock()
 
-	slog.Info("starting commit", "opID", sc.OpId, "chunkHandle", sc.ChunkHandle, "offset", sc.Offset, "size", sc.pos, "storageDir", sc.storageDir)
+	var dataSize int64
+	if sc.useFile {
+		dataSize = sc.written
+	} else {
+		dataSize = int64(sc.pos)
+	}
+
+	slog.Info("starting commit", "opID", sc.OpId, "chunkHandle", sc.ChunkHandle, "offset", sc.Offset, "size", dataSize, "useFile", sc.useFile)
 
 	// Create storage directory if it doesn't exist
 	if err := os.MkdirAll(sc.storageDir, 0755); err != nil {
 		slog.Error("failed to create storage directory", "dir", sc.storageDir, "error", err)
 		return fmt.Errorf("failed to create storage directory: %w", err)
 	}
-	slog.Info("storage directory ready", "dir", sc.storageDir)
 
 	// Chunk file path
 	chunkFilePath := filepath.Join(sc.storageDir, sc.ChunkHandle)
@@ -111,19 +191,52 @@ func (sc *StagedChunk) Commit() error {
 		slog.Error("failed to seek", "offset", sc.Offset, "error", err)
 		return fmt.Errorf("failed to seek to offset %d: %w", sc.Offset, err)
 	}
-	slog.Info("seeked to offset", "offset", sc.Offset)
 
-	// Write the buffer to disk
-	bytesWritten, err := file.Write(sc.buf[:sc.pos])
-	if err != nil {
-		slog.Error("failed to write data", "error", err)
-		return fmt.Errorf("failed to write data to disk: %w", err)
+	var bytesWritten int64
+
+	if sc.useFile {
+		// Stream from temp file to chunk file
+		if sc.tempFile == nil {
+			return fmt.Errorf("temp file not initialized")
+		}
+
+		tempPath := sc.tempFile.Name()
+
+		// Seek temp file to beginning for reading
+		if _, err := sc.tempFile.Seek(0, io.SeekStart); err != nil {
+			slog.Error("failed to seek temp file", "error", err)
+			return fmt.Errorf("failed to seek temp file: %w", err)
+		}
+
+		bytesWritten, err = io.Copy(file, sc.tempFile)
+		if err != nil {
+			slog.Error("failed to write data", "error", err)
+			return fmt.Errorf("failed to write data to disk: %w", err)
+		}
+
+		// Close and remove temp file
+		sc.tempFile.Close()
+		if err := os.Remove(tempPath); err != nil {
+			slog.Warn("failed to remove temp file", "path", tempPath, "error", err)
+		}
+		sc.tempFile = nil
+	} else {
+		// Write from memory buffer
+		n, err := file.Write(sc.buf[:sc.pos])
+		if err != nil {
+			slog.Error("failed to write data", "error", err)
+			return fmt.Errorf("failed to write data to disk: %w", err)
+		}
+		bytesWritten = int64(n)
+		// Clear buffer to free memory
+		sc.buf = nil
 	}
+
 	slog.Info("wrote data to disk", "bytes", bytesWritten)
 
-	if bytesWritten != sc.pos {
-		slog.Error("incomplete write", "wrote", bytesWritten, "expected", sc.pos)
-		return fmt.Errorf("incomplete write: wrote %d bytes, expected %d", bytesWritten, sc.pos)
+	if bytesWritten != dataSize {
+		slog.Error("incomplete write", "wrote", bytesWritten, "expected", dataSize)
+		return fmt.Errorf("incomplete write: wrote %d bytes, expected %d", bytesWritten, dataSize)
 	}
 
 	// Sync to ensure durability
@@ -139,6 +252,20 @@ func (sc *StagedChunk) Commit() error {
 	slog.Info("COMMIT SUCCESSFUL - data written to disk", "opID", sc.OpId, "chunkHandle", sc.ChunkHandle, "file", chunkFilePath, "bytesWritten", bytesWritten, "offset", sc.Offset)
 
 	return nil
+}
+
+// Close cleans up resources if commit was not called
+func (sc *StagedChunk) Close() {
+	sc.mux.Lock()
+	defer sc.mux.Unlock()
+
+	if sc.tempFile != nil {
+		tempPath := sc.tempFile.Name()
+		sc.tempFile.Close()
+		os.Remove(tempPath)
+		sc.tempFile = nil
+	}
+	sc.buf = nil
 }
 
 func (sc *StagedChunk) Ready() {

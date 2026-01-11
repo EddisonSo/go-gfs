@@ -81,6 +81,8 @@ func main() {
 			cmdRm(cmdArgs)
 		case "info":
 			cmdInfo(cmdArgs)
+		case "pressure":
+			cmdPressure(cmdArgs)
 		case "help":
 			printHelp()
 		case "exit", "quit":
@@ -135,6 +137,7 @@ func printHelp() {
   write <path> < <file>   Write local file to GFS
   rm <path>               Delete a file
   info <path>             Show file information
+  pressure                Show cluster resource pressure (CPU, memory, disk)
   help                    Show this help
   exit                    Quit the client
 
@@ -143,7 +146,8 @@ Examples:
   write /hello.txt "Hello World"
   read /hello.txt
   info /hello.txt
-  rm /hello.txt`)
+  rm /hello.txt
+  pressure`)
 }
 
 func getContext() (context.Context, context.CancelFunc) {
@@ -215,8 +219,23 @@ func cmdRead(args []string) {
 		return
 	}
 
-	// Read all chunks and concatenate
-	var allData []byte
+	// Set up output writer - either file or stdout
+	var output io.Writer
+	var outFile *os.File
+	if outputFile != "" {
+		outFile, err = os.Create(outputFile)
+		if err != nil {
+			fmt.Printf("Failed to create output file: %v\n", err)
+			return
+		}
+		defer outFile.Close()
+		output = outFile
+	} else {
+		output = os.Stdout
+	}
+
+	// Stream each chunk directly to output
+	var totalBytes int64
 	for _, chunk := range locResp.Chunks {
 		var server *pb.ChunkServerInfo
 		if chunk.Primary != nil {
@@ -235,25 +254,19 @@ func cmdRead(args []string) {
 			ReplicationPort: int(server.ReplicationPort),
 		}
 
-		data, err := performRead(replica, chunk.ChunkHandle)
+		written, err := performReadStream(replica, chunk.ChunkHandle, output)
 		if err != nil {
 			fmt.Printf("Failed to read chunk %s: %v\n", chunk.ChunkHandle, err)
 			return
 		}
-		allData = append(allData, data...)
+		totalBytes += written
 	}
 
-	if outputFile != "" {
-		if err := os.WriteFile(outputFile, allData, 0644); err != nil {
-			fmt.Printf("Failed to write file: %v\n", err)
-			return
-		}
-		fmt.Printf("Wrote %d bytes to %s\n", len(allData), outputFile)
+	// Add newline to stdout if needed (for text files)
+	if outputFile == "" {
+		fmt.Println()
 	} else {
-		fmt.Print(string(allData))
-		if len(allData) > 0 && allData[len(allData)-1] != '\n' {
-			fmt.Println()
-		}
+		fmt.Printf("Wrote %d bytes to %s\n", totalBytes, outputFile)
 	}
 }
 
@@ -268,7 +281,6 @@ func cmdWrite(args []string) {
 	}
 
 	path := args[0]
-	var writeData []byte
 
 	// Check for < redirect
 	inputFile := ""
@@ -279,48 +291,144 @@ func cmdWrite(args []string) {
 		}
 	}
 
-	if inputFile != "" {
-		var err error
-		writeData, err = os.ReadFile(inputFile)
-		if err != nil {
-			fmt.Printf("Failed to read file: %v\n", err)
-			return
-		}
-	} else if len(args) > 1 && args[1] != "<" {
-		// Join remaining args as data
-		writeData = []byte(strings.Join(args[1:], " "))
-	} else {
-		fmt.Println("Usage: write <path> <data>  OR  write <path> < localfile")
-		return
-	}
-
-	if len(writeData) == 0 {
-		fmt.Println("No data to write")
-		return
-	}
-
 	ctx, cancel := getContext()
 	defer cancel()
 
 	// Create file if it doesn't exist
 	client.CreateFile(ctx, &pb.CreateFileRequest{Path: path})
 
+	if inputFile != "" {
+		// Stream from file
+		totalWritten, err := writeFromFile(ctx, path, inputFile)
+		if err != nil {
+			fmt.Printf("Write failed: %v\n", err)
+			return
+		}
+		fmt.Printf("Wrote %d bytes to %s\n", totalWritten, path)
+	} else if len(args) > 1 && args[1] != "<" {
+		// Inline data (typically small)
+		writeData := []byte(strings.Join(args[1:], " "))
+		if len(writeData) == 0 {
+			fmt.Println("No data to write")
+			return
+		}
+		totalWritten, err := writeData_inline(ctx, path, writeData)
+		if err != nil {
+			fmt.Printf("Write failed: %v\n", err)
+			return
+		}
+		fmt.Printf("Wrote %d bytes to %s\n", totalWritten, path)
+	} else {
+		fmt.Println("Usage: write <path> <data>  OR  write <path> < localfile")
+		return
+	}
+}
+
+// writeFromFile streams data from a local file to GFS without loading it all into memory
+func writeFromFile(ctx context.Context, gfsPath, localPath string) (int64, error) {
+	file, err := os.Open(localPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// Get file size for progress reporting
+	stat, err := file.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("failed to stat file: %w", err)
+	}
+	totalSize := stat.Size()
+
+	var totalWritten int64
+	buf := make([]byte, maxChunkSize) // Reusable buffer
+
+	for totalWritten < totalSize {
+		// Check for existing chunks with space
+		var chunk *pb.ChunkLocationInfo
+		var writeSize int64
+
+		locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: gfsPath})
+		if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
+			lastChunk := locResp.Chunks[len(locResp.Chunks)-1]
+			spaceAvailable := int64(maxChunkSize - lastChunk.Size)
+			if spaceAvailable > 0 {
+				chunk = lastChunk
+				writeSize = min(totalSize-totalWritten, spaceAvailable)
+			}
+		}
+
+		// Allocate new chunk if needed
+		if chunk == nil {
+			allocResp, err := client.AllocateChunk(ctx, &pb.AllocateChunkRequest{Path: gfsPath})
+			if err != nil {
+				return totalWritten, fmt.Errorf("failed to allocate chunk: %w", err)
+			}
+			if !allocResp.Success {
+				return totalWritten, fmt.Errorf("chunk allocation failed: %s", allocResp.Message)
+			}
+			chunk = allocResp.Chunk
+			writeSize = min(totalSize-totalWritten, maxChunkSize)
+		}
+
+		// Read data from file into buffer
+		n, err := io.ReadFull(file, buf[:writeSize])
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return totalWritten, fmt.Errorf("failed to read from file: %w", err)
+		}
+		if n == 0 {
+			break
+		}
+
+		// Convert to internal types
+		primary := csstructs.ReplicaIdentifier{
+			ID:              chunk.Primary.ServerId,
+			Hostname:        chunk.Primary.Hostname,
+			DataPort:        int(chunk.Primary.DataPort),
+			ReplicationPort: int(chunk.Primary.ReplicationPort),
+		}
+
+		var replicas []csstructs.ReplicaIdentifier
+		for _, loc := range chunk.Locations {
+			if loc.ServerId != chunk.Primary.ServerId {
+				replicas = append(replicas, csstructs.ReplicaIdentifier{
+					ID:              loc.ServerId,
+					Hostname:        loc.Hostname,
+					DataPort:        int(loc.DataPort),
+					ReplicationPort: int(loc.ReplicationPort),
+				})
+			}
+		}
+
+		if err := performWrite(primary, replicas, chunk.ChunkHandle, buf[:n], -1); err != nil {
+			return totalWritten, err
+		}
+
+		totalWritten += int64(n)
+		remaining := totalSize - totalWritten
+		if remaining > 0 {
+			fmt.Printf("  Wrote chunk %s (%d bytes), %d bytes remaining...\n", chunk.ChunkHandle, n, remaining)
+		}
+	}
+
+	return totalWritten, nil
+}
+
+// writeData_inline writes small inline data (for string arguments)
+func writeData_inline(ctx context.Context, gfsPath string, data []byte) (int, error) {
 	totalWritten := 0
-	remaining := writeData
+	remaining := data
 
 	for len(remaining) > 0 {
-		// Determine how much to write in this chunk
 		var chunkData []byte
 		var chunk *pb.ChunkLocationInfo
 
 		// Check for existing chunks with space
-		locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: path})
+		locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: gfsPath})
 		if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
 			lastChunk := locResp.Chunks[len(locResp.Chunks)-1]
 			spaceAvailable := maxChunkSize - lastChunk.Size
 			if spaceAvailable > 0 {
 				chunk = lastChunk
-				// Write only what fits
 				writeSize := uint64(len(remaining))
 				if writeSize > spaceAvailable {
 					writeSize = spaceAvailable
@@ -332,18 +440,15 @@ func cmdWrite(args []string) {
 
 		// Allocate new chunk if needed
 		if chunk == nil {
-			allocResp, err := client.AllocateChunk(ctx, &pb.AllocateChunkRequest{Path: path})
+			allocResp, err := client.AllocateChunk(ctx, &pb.AllocateChunkRequest{Path: gfsPath})
 			if err != nil {
-				fmt.Printf("Failed to allocate chunk: %v\n", err)
-				return
+				return totalWritten, fmt.Errorf("failed to allocate chunk: %w", err)
 			}
 			if !allocResp.Success {
-				fmt.Printf("Chunk allocation failed: %s\n", allocResp.Message)
-				return
+				return totalWritten, fmt.Errorf("chunk allocation failed: %s", allocResp.Message)
 			}
 			chunk = allocResp.Chunk
 
-			// Write up to maxChunkSize
 			writeSize := len(remaining)
 			if writeSize > maxChunkSize {
 				writeSize = maxChunkSize
@@ -373,8 +478,7 @@ func cmdWrite(args []string) {
 		}
 
 		if err := performWrite(primary, replicas, chunk.ChunkHandle, chunkData, -1); err != nil {
-			fmt.Printf("Write failed: %v\n", err)
-			return
+			return totalWritten, err
 		}
 
 		totalWritten += len(chunkData)
@@ -383,7 +487,7 @@ func cmdWrite(args []string) {
 		}
 	}
 
-	fmt.Printf("Wrote %d bytes to %s\n", totalWritten, path)
+	return totalWritten, nil
 }
 
 // ============ rm command ============
@@ -456,6 +560,88 @@ func cmdInfo(args []string) {
 			}
 		}
 	}
+}
+
+// ============ pressure command ============
+
+func cmdPressure(args []string) {
+	ctx, cancel := getContext()
+	defer cancel()
+
+	resp, err := client.GetClusterPressure(ctx, &pb.GetClusterPressureRequest{})
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
+	}
+
+	if len(resp.Servers) == 0 {
+		fmt.Println("No chunkservers registered")
+		return
+	}
+
+	fmt.Println("Cluster Resource Pressure")
+	fmt.Println("=========================")
+	fmt.Println()
+
+	for _, server := range resp.Servers {
+		status := "ALIVE"
+		if !server.IsAlive {
+			status = "DEAD"
+		}
+
+		fmt.Printf("Server: %s (%s:%d) [%s]\n",
+			server.Server.ServerId,
+			server.Server.Hostname,
+			server.Server.DataPort,
+			status)
+		fmt.Printf("  Chunks: %d\n", server.ChunkCount)
+
+		if server.Resources != nil {
+			r := server.Resources
+
+			// CPU bar
+			cpuBar := progressBar(r.CpuUsagePercent, 20)
+			fmt.Printf("  CPU:    [%s] %5.1f%%\n", cpuBar, r.CpuUsagePercent)
+
+			// Memory bar and details
+			memBar := progressBar(r.MemoryUsagePercent, 20)
+			memUsedGB := float64(r.MemoryUsedBytes) / (1024 * 1024 * 1024)
+			memTotalGB := float64(r.MemoryTotalBytes) / (1024 * 1024 * 1024)
+			fmt.Printf("  Memory: [%s] %5.1f%% (%.1f/%.1f GB)\n",
+				memBar, r.MemoryUsagePercent, memUsedGB, memTotalGB)
+
+			// Disk bar and details
+			diskBar := progressBar(r.DiskUsagePercent, 20)
+			diskUsedGB := float64(r.DiskUsedBytes) / (1024 * 1024 * 1024)
+			diskTotalGB := float64(r.DiskTotalBytes) / (1024 * 1024 * 1024)
+			fmt.Printf("  Disk:   [%s] %5.1f%% (%.1f/%.1f GB)\n",
+				diskBar, r.DiskUsagePercent, diskUsedGB, diskTotalGB)
+		} else {
+			fmt.Println("  (no resource data available)")
+		}
+		fmt.Println()
+	}
+}
+
+// progressBar creates a visual progress bar
+func progressBar(percent float64, width int) string {
+	filled := int(percent / 100 * float64(width))
+	if filled > width {
+		filled = width
+	}
+	if filled < 0 {
+		filled = 0
+	}
+
+	bar := make([]byte, width)
+	for i := 0; i < width; i++ {
+		if i < filled {
+			bar[i] = '#'
+		} else {
+			bar[i] = '-'
+		}
+	}
+	return string(bar)
 }
 
 // ============ Data operations ============
@@ -534,10 +720,12 @@ func performWrite(primary csstructs.ReplicaIdentifier, replicas []csstructs.Repl
 	return fmt.Errorf("data persistence failed")
 }
 
-func performRead(server csstructs.ReplicaIdentifier, chunkHandle string) ([]byte, error) {
+// performReadStream streams chunk data directly to the provided writer.
+// Returns the number of bytes written and any error encountered.
+func performReadStream(server csstructs.ReplicaIdentifier, chunkHandle string, w io.Writer) (int64, error) {
 	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", server.Hostname, server.DataPort))
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect: %w", err)
+		return 0, fmt.Errorf("failed to connect: %w", err)
 	}
 	defer conn.Close()
 
@@ -545,7 +733,7 @@ func performRead(server csstructs.ReplicaIdentifier, chunkHandle string) ([]byte
 	actionBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(actionBytes, uint32(csstructs.Upload))
 	if _, err = conn.Write(actionBytes); err != nil {
-		return nil, fmt.Errorf("failed to send action: %w", err)
+		return 0, fmt.Errorf("failed to send action: %w", err)
 	}
 
 	// Create read JWT
@@ -557,27 +745,27 @@ func performRead(server csstructs.ReplicaIdentifier, chunkHandle string) ([]byte
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	secret, err := secrets.GetSecret(nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get secret: %w", err)
+		return 0, fmt.Errorf("failed to get secret: %w", err)
 	}
 
 	tokenString, err := token.SignedString(secret)
 	if err != nil {
-		return nil, fmt.Errorf("failed to sign token: %w", err)
+		return 0, fmt.Errorf("failed to sign token: %w", err)
 	}
 
 	// Send JWT
 	tokenLen := int32(len(tokenString))
 	if err = binary.Write(conn, binary.BigEndian, tokenLen); err != nil {
-		return nil, fmt.Errorf("failed to send token length: %w", err)
+		return 0, fmt.Errorf("failed to send token length: %w", err)
 	}
 	if _, err = conn.Write([]byte(tokenString)); err != nil {
-		return nil, fmt.Errorf("failed to send token: %w", err)
+		return 0, fmt.Errorf("failed to send token: %w", err)
 	}
 
 	// Read response status
 	statusBytes := make([]byte, 1)
 	if _, err = conn.Read(statusBytes); err != nil {
-		return nil, fmt.Errorf("failed to read status: %w", err)
+		return 0, fmt.Errorf("failed to read status: %w", err)
 	}
 
 	if statusBytes[0] == 0 {
@@ -593,29 +781,21 @@ func performRead(server csstructs.ReplicaIdentifier, chunkHandle string) ([]byte
 		msgBytes := make([]byte, msgLen)
 		conn.Read(msgBytes)
 
-		return nil, fmt.Errorf("read failed: code=%d, message=%s", errorCode, string(msgBytes))
+		return 0, fmt.Errorf("read failed: code=%d, message=%s", errorCode, string(msgBytes))
 	}
 
 	// Read file size
 	sizeBytes := make([]byte, 8)
 	if _, err = conn.Read(sizeBytes); err != nil {
-		return nil, fmt.Errorf("failed to read file size: %w", err)
+		return 0, fmt.Errorf("failed to read file size: %w", err)
 	}
 	fileSize := binary.BigEndian.Uint64(sizeBytes)
 
-	// Read file contents
-	data := make([]byte, fileSize)
-	totalRead := 0
-	for totalRead < int(fileSize) {
-		n, err := conn.Read(data[totalRead:])
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, fmt.Errorf("failed to read data: %w", err)
-		}
-		totalRead += n
+	// Stream data directly to writer using io.CopyN with a limited reader
+	written, err := io.CopyN(w, conn, int64(fileSize))
+	if err != nil && err != io.EOF {
+		return written, fmt.Errorf("failed to stream data: %w", err)
 	}
 
-	return data[:totalRead], nil
+	return written, nil
 }

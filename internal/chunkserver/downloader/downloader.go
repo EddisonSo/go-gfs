@@ -136,6 +136,10 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		sequence,
 		fds.ChunkServerConfig.Dir,
 	)
+	if stagedchunk == nil {
+		slog.Error("failed to create staged chunk", "opId", opId)
+		return
+	}
 
 	fds.ChunkStagingTrackingService.AddStagedChunk(stagedchunk)
 

@@ -46,12 +46,35 @@ func (s *GRPCServer) Register(ctx context.Context, req *pb.RegisterRequest) (*pb
 
 // Heartbeat handles chunkserver heartbeats
 func (s *GRPCServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
-	ok := s.master.Heartbeat(ChunkServerID(req.ServerId))
+	// Convert protobuf ResourceMetrics to internal type
+	var resources *ResourceMetrics
+	if req.Resources != nil {
+		resources = &ResourceMetrics{
+			CPUUsagePercent:    req.Resources.CpuUsagePercent,
+			MemoryUsedBytes:    req.Resources.MemoryUsedBytes,
+			MemoryTotalBytes:   req.Resources.MemoryTotalBytes,
+			MemoryUsagePercent: req.Resources.MemoryUsagePercent,
+			DiskUsedBytes:      req.Resources.DiskUsedBytes,
+			DiskTotalBytes:     req.Resources.DiskTotalBytes,
+			DiskUsagePercent:   req.Resources.DiskUsagePercent,
+		}
+	}
+
+	ok := s.master.Heartbeat(ChunkServerID(req.ServerId), resources)
 	if !ok {
 		slog.Warn("heartbeat from unknown server", "serverID", req.ServerId)
 		return &pb.HeartbeatResponse{
 			Success: false,
 		}, nil
+	}
+
+	// Log resource metrics if present
+	if resources != nil {
+		slog.Debug("chunkserver resources",
+			"serverID", req.ServerId,
+			"cpu_percent", resources.CPUUsagePercent,
+			"mem_percent", resources.MemoryUsagePercent,
+			"disk_percent", resources.DiskUsagePercent)
 	}
 
 	// Process chunk reports
@@ -251,4 +274,37 @@ func chunkLocationToProto(loc *ChunkLocation) *pb.ChunkServerInfo {
 		DataPort:        int32(loc.DataPort),
 		ReplicationPort: int32(loc.ReplicationPort),
 	}
+}
+
+// GetClusterPressure returns resource metrics for all chunkservers in the cluster
+func (s *GRPCServer) GetClusterPressure(ctx context.Context, req *pb.GetClusterPressureRequest) (*pb.GetClusterPressureResponse, error) {
+	statuses := s.master.GetClusterStatus()
+
+	protoStatuses := make([]*pb.ChunkServerStatus, 0, len(statuses))
+	for _, status := range statuses {
+		protoStatus := &pb.ChunkServerStatus{
+			Server:     chunkLocationToProto(status.Location),
+			ChunkCount: int32(status.ChunkCount),
+			IsAlive:    status.IsAlive,
+		}
+
+		// Add resource metrics if available
+		if status.Location.Resources != nil {
+			protoStatus.Resources = &pb.ResourceMetrics{
+				CpuUsagePercent:    status.Location.Resources.CPUUsagePercent,
+				MemoryUsedBytes:    status.Location.Resources.MemoryUsedBytes,
+				MemoryTotalBytes:   status.Location.Resources.MemoryTotalBytes,
+				MemoryUsagePercent: status.Location.Resources.MemoryUsagePercent,
+				DiskUsedBytes:      status.Location.Resources.DiskUsedBytes,
+				DiskTotalBytes:     status.Location.Resources.DiskTotalBytes,
+				DiskUsagePercent:   status.Location.Resources.DiskUsagePercent,
+			}
+		}
+
+		protoStatuses = append(protoStatuses, protoStatus)
+	}
+
+	return &pb.GetClusterPressureResponse{
+		Servers: protoStatuses,
+	}, nil
 }

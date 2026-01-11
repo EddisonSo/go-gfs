@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"eddisonso.com/go-gfs/internal/master/wal"
+	"github.com/google/uuid"
 )
 
 // ChunkHandle is a unique identifier for a chunk
@@ -16,6 +17,17 @@ type ChunkHandle string
 // ChunkServerID is a unique identifier for a chunkserver
 type ChunkServerID string
 
+// ResourceMetrics holds CPU, memory, and disk usage information from a chunkserver
+type ResourceMetrics struct {
+	CPUUsagePercent    float64
+	MemoryUsedBytes    uint64
+	MemoryTotalBytes   uint64
+	MemoryUsagePercent float64
+	DiskUsedBytes      uint64
+	DiskTotalBytes     uint64
+	DiskUsagePercent   float64
+}
+
 // ChunkLocation represents where a chunk replica is stored
 type ChunkLocation struct {
 	ServerID        ChunkServerID
@@ -23,6 +35,7 @@ type ChunkLocation struct {
 	DataPort        int
 	ReplicationPort int
 	LastHeartbeat   time.Time
+	Resources       *ResourceMetrics // Current resource usage
 }
 
 // ChunkStatus represents the state of a chunk
@@ -76,10 +89,6 @@ type Master struct {
 	defaultChunkSize  uint64
 	replicationFactor int
 
-	// Chunk handle counter for generating new handles
-	nextChunkHandle uint64
-	handleMu        sync.Mutex
-
 	// Write-ahead log for persistence
 	wal *wal.WAL
 }
@@ -93,7 +102,6 @@ func NewMaster(walPath string) (*Master, error) {
 		pendingDeletes:    make(map[ChunkServerID][]ChunkHandle),
 		defaultChunkSize:  64 << 20, // 64MB
 		replicationFactor: 3,
-		nextChunkHandle:   1,
 	}
 
 	// Initialize WAL
@@ -165,12 +173,7 @@ func (m *Master) replayWAL(walPath string) error {
 			m.replayCommitChunk(data.ChunkHandle, data.Size)
 
 		case wal.OpSetCounter:
-			var data wal.SetCounterData
-			if err := json.Unmarshal(entry.Data, &data); err != nil {
-				slog.Warn("failed to unmarshal SET_COUNTER", "error", err)
-				continue
-			}
-			m.nextChunkHandle = data.NextChunkHandle
+			// Legacy counter entries are ignored - we now use UUIDs for chunk handles
 		}
 	}
 
@@ -259,13 +262,14 @@ func (m *Master) RegisterChunkServer(id ChunkServerID, hostname string, dataPort
 	slog.Info("registered chunkserver", "id", id, "hostname", hostname, "dataPort", dataPort)
 }
 
-// Heartbeat updates the last heartbeat time for a chunkserver
-func (m *Master) Heartbeat(id ChunkServerID) bool {
+// Heartbeat updates the last heartbeat time and resource metrics for a chunkserver
+func (m *Master) Heartbeat(id ChunkServerID, resources *ResourceMetrics) bool {
 	m.csMu.Lock()
 	defer m.csMu.Unlock()
 
 	if loc, ok := m.chunkservers[id]; ok {
 		loc.LastHeartbeat = time.Now()
+		loc.Resources = resources
 		return true
 	}
 	return false
@@ -293,14 +297,99 @@ func (m *Master) GetChunkServers() []*ChunkLocation {
 	return servers
 }
 
-// generateChunkHandle generates a new unique chunk handle
-func (m *Master) generateChunkHandle() ChunkHandle {
-	m.handleMu.Lock()
-	defer m.handleMu.Unlock()
+// GetChunkServerResources returns the resource metrics for a specific chunkserver
+func (m *Master) GetChunkServerResources(id ChunkServerID) *ResourceMetrics {
+	m.csMu.RLock()
+	defer m.csMu.RUnlock()
 
-	handle := ChunkHandle(fmt.Sprintf("chunk_%d", m.nextChunkHandle))
-	m.nextChunkHandle++
-	return handle
+	if loc, ok := m.chunkservers[id]; ok {
+		return loc.Resources
+	}
+	return nil
+}
+
+// ChunkServerStatus contains full status information for a chunkserver
+type ChunkServerStatus struct {
+	Location   *ChunkLocation
+	ChunkCount int
+	IsAlive    bool
+}
+
+// GetClusterStatus returns status information for all chunkservers
+func (m *Master) GetClusterStatus() []ChunkServerStatus {
+	m.csMu.RLock()
+	defer m.csMu.RUnlock()
+
+	// Count chunks per server
+	m.chunkMu.RLock()
+	chunkCounts := make(map[ChunkServerID]int)
+	for _, chunk := range m.chunks {
+		for _, loc := range chunk.Locations {
+			chunkCounts[loc.ServerID]++
+		}
+	}
+	m.chunkMu.RUnlock()
+
+	// Build status list
+	statuses := make([]ChunkServerStatus, 0, len(m.chunkservers))
+	now := time.Now()
+	heartbeatTimeout := 30 * time.Second // Consider server dead if no heartbeat in 30s
+
+	for id, loc := range m.chunkservers {
+		status := ChunkServerStatus{
+			Location:   loc,
+			ChunkCount: chunkCounts[id],
+			IsAlive:    now.Sub(loc.LastHeartbeat) < heartbeatTimeout,
+		}
+		statuses = append(statuses, status)
+	}
+
+	return statuses
+}
+
+// GetLeastLoadedServers returns chunkservers sorted by combined resource pressure
+// Lower scores indicate less resource pressure (better candidates for placement)
+func (m *Master) GetLeastLoadedServers(n int) []*ChunkLocation {
+	m.csMu.RLock()
+	defer m.csMu.RUnlock()
+
+	type serverScore struct {
+		loc   *ChunkLocation
+		score float64
+	}
+
+	scores := make([]serverScore, 0, len(m.chunkservers))
+	for _, loc := range m.chunkservers {
+		score := 0.0
+		if loc.Resources != nil {
+			// Weight CPU and memory equally, disk slightly less
+			// (since disk is typically larger and less critical short-term)
+			score = loc.Resources.CPUUsagePercent*0.4 +
+				loc.Resources.MemoryUsagePercent*0.4 +
+				loc.Resources.DiskUsagePercent*0.2
+		}
+		scores = append(scores, serverScore{loc: loc, score: score})
+	}
+
+	// Sort by score (lowest first)
+	for i := 0; i < len(scores)-1; i++ {
+		for j := i + 1; j < len(scores); j++ {
+			if scores[j].score < scores[i].score {
+				scores[i], scores[j] = scores[j], scores[i]
+			}
+		}
+	}
+
+	result := make([]*ChunkLocation, 0, n)
+	for i := 0; i < len(scores) && i < n; i++ {
+		result = append(result, scores[i].loc)
+	}
+	return result
+}
+
+// generateChunkHandle generates a new unique chunk handle using UUIDv4
+func (m *Master) generateChunkHandle() ChunkHandle {
+	return ChunkHandle(uuid.New().String())
 }
 
 // CreateFile creates a new file in the namespace
@@ -410,10 +499,7 @@ func (m *Master) AddChunkToFile(path string) (*ChunkInfo, error) {
 	// Generate new chunk handle
 	handle := m.generateChunkHandle()
 
-	// Log to WAL before applying (both the chunk addition and counter update)
-	if err := m.wal.LogSetCounter(m.nextChunkHandle); err != nil {
-		return nil, fmt.Errorf("WAL write failed: %w", err)
-	}
+	// Log to WAL before applying
 	if err := m.wal.LogAddChunk(path, string(handle)); err != nil {
 		return nil, fmt.Errorf("WAL write failed: %w", err)
 	}
