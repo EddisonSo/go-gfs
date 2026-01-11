@@ -398,3 +398,33 @@ func (mc *MasterClient) ReportCommit(chunkHandle string, size uint64) error {
 
 	return nil
 }
+
+// RenewLease requests a lease extension for a chunk this server is primary for
+// Returns the lease duration in milliseconds, or 0 if renewal failed
+func (mc *MasterClient) RenewLease(chunkHandle string) (uint64, error) {
+	if mc.client == nil {
+		slog.Debug("no master connection, skipping lease renewal")
+		return 0, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := mc.client.RenewLease(ctx, &pb.RenewLeaseRequest{
+		ServerId:    mc.serverID,
+		ChunkHandle: chunkHandle,
+	})
+
+	if err != nil {
+		slog.Error("failed to renew lease", "chunk", chunkHandle, "error", err)
+		return 0, err
+	}
+
+	if !resp.Success {
+		slog.Warn("lease renewal rejected", "chunk", chunkHandle, "message", resp.Message)
+		return 0, nil
+	}
+
+	slog.Debug("lease renewed", "chunk", chunkHandle, "duration_ms", resp.LeaseDurationMs)
+	return resp.LeaseDurationMs, nil
+}

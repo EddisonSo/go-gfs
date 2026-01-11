@@ -97,7 +97,12 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	if claims.Filesize <= 0 || claims.Filesize > 2<<26 { //Max 64 MB
 		slog.Error("Invalid file size", "file_size", claims.Filesize)
 	}
-	
+
+	// Start background lease renewal (every 30s) to handle long transfers
+	stopLeaseRenewal := make(chan struct{})
+	defer close(stopLeaseRenewal)
+	go fds.backgroundLeaseRenewal(claims.ChunkHandle, stopLeaseRenewal)
+
 	ats := allocatortrackingservice.GetAllocatorTrackingService()
 	currAllocator, err := ats.GetAllocator(claims.ChunkHandle)
 	if err != nil {
@@ -174,6 +179,15 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 
 	slog.Info("quorum reached, initiating commit phase", "opID", opId)
 
+	// Renew lease before committing to ensure we're still the primary
+	if mc := masterclient.GetInstance(); mc != nil {
+		if duration, err := mc.RenewLease(claims.ChunkHandle); err != nil || duration == 0 {
+			slog.Error("failed to renew lease before commit - no longer primary", "chunk", claims.ChunkHandle, "error", err)
+			conn.Write([]byte{0}) // 0 = failure
+			return
+		}
+	}
+
 	// Send COMMIT to all replicas
 	if err := fds.commitToReplicas(claims.Replicas, opId); err != nil {
 		slog.Error("failed to commit to replicas", "error", err)
@@ -236,4 +250,35 @@ func (fds *FileDownloadService) commitToReplicas(replicas []csstructs.ReplicaIde
 	}
 
 	return nil
+}
+
+// backgroundLeaseRenewal periodically renews the lease for long-running transfers
+func (fds *FileDownloadService) backgroundLeaseRenewal(chunkHandle string, stop <-chan struct{}) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	// Renew immediately on start
+	if mc := masterclient.GetInstance(); mc != nil {
+		if _, err := mc.RenewLease(chunkHandle); err != nil {
+			slog.Warn("initial lease renewal failed", "chunk", chunkHandle, "error", err)
+		}
+	}
+
+	for {
+		select {
+		case <-stop:
+			slog.Debug("stopping background lease renewal", "chunk", chunkHandle)
+			return
+		case <-ticker.C:
+			if mc := masterclient.GetInstance(); mc != nil {
+				if duration, err := mc.RenewLease(chunkHandle); err != nil {
+					slog.Warn("background lease renewal failed", "chunk", chunkHandle, "error", err)
+				} else if duration > 0 {
+					slog.Debug("background lease renewed", "chunk", chunkHandle, "duration_ms", duration)
+				} else {
+					slog.Warn("lost primary status during transfer", "chunk", chunkHandle)
+				}
+			}
+		}
+	}
 }

@@ -231,6 +231,27 @@ func (s *GRPCServer) ReportCommit(ctx context.Context, req *pb.ReportCommitReque
 	}, nil
 }
 
+// RenewLease allows a primary chunkserver to extend its lease
+func (s *GRPCServer) RenewLease(ctx context.Context, req *pb.RenewLeaseRequest) (*pb.RenewLeaseResponse, error) {
+	ok := s.master.RenewLease(
+		ChunkHandle(req.ChunkHandle),
+		ChunkServerID(req.ServerId),
+	)
+
+	if !ok {
+		return &pb.RenewLeaseResponse{
+			Success: false,
+			Message: "lease renewal failed: not the current primary or chunk not found",
+		}, nil
+	}
+
+	return &pb.RenewLeaseResponse{
+		Success:         true,
+		Message:         "lease renewed",
+		LeaseDurationMs: uint64(LeaseDuration.Milliseconds()),
+	}, nil
+}
+
 // Helper functions to convert internal types to protobuf types
 
 func fileInfoToProto(f *FileInfo) *pb.FileInfoResponse {

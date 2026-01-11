@@ -46,15 +46,19 @@ const (
 	ChunkCommitted                    // Successfully written and confirmed
 )
 
+// Lease duration for primary assignment
+const LeaseDuration = 60 * time.Second
+
 // ChunkInfo contains metadata about a chunk
 type ChunkInfo struct {
-	Handle    ChunkHandle
-	FilePath  string          // File this chunk belongs to
-	Locations []ChunkLocation // Replica locations
-	Version   uint64          // Chunk version for consistency
-	Primary   *ChunkLocation  // Current primary (lease holder)
-	Status    ChunkStatus     // Pending or Committed
-	Size      uint64          // Actual size written (set on commit)
+	Handle          ChunkHandle
+	FilePath        string          // File this chunk belongs to
+	Locations       []ChunkLocation // Replica locations
+	Version         uint64          // Chunk version for consistency
+	Primary         *ChunkLocation  // Current primary (lease holder)
+	LeaseExpiration time.Time       // When the primary's lease expires
+	Status          ChunkStatus     // Pending or Committed
+	Size            uint64          // Actual size written (set on commit)
 }
 
 // FileInfo contains metadata about a file
@@ -516,14 +520,15 @@ func (m *Master) AddChunkToFile(path string) (*ChunkInfo, error) {
 		return nil, fmt.Errorf("no chunkservers available")
 	}
 
-	// Create chunk info
+	// Create chunk info with lease
 	m.chunkMu.Lock()
 	chunkInfo := &ChunkInfo{
-		Handle:    handle,
-		FilePath:  path,
-		Locations: replicas,
-		Version:   1,
-		Primary:   &replicas[0], // First replica is primary
+		Handle:          handle,
+		FilePath:        path,
+		Locations:       replicas,
+		Version:         1,
+		Primary:         &replicas[0], // First replica is primary
+		LeaseExpiration: time.Now().Add(LeaseDuration),
 	}
 	m.chunks[handle] = chunkInfo
 	m.chunkMu.Unlock()
@@ -565,7 +570,7 @@ func (m *Master) GetChunkInfo(handle ChunkHandle) (*ChunkInfo, error) {
 	return chunk, nil
 }
 
-// GetFileChunks returns all chunk info for a file
+// GetFileChunks returns all chunk info for a file, checking and renewing leases as needed
 func (m *Master) GetFileChunks(path string) ([]*ChunkInfo, error) {
 	m.fileMu.RLock()
 	file, exists := m.files[path]
@@ -575,16 +580,92 @@ func (m *Master) GetFileChunks(path string) ([]*ChunkInfo, error) {
 		return nil, fmt.Errorf("file not found: %s", path)
 	}
 
-	m.chunkMu.RLock()
-	defer m.chunkMu.RUnlock()
+	m.chunkMu.Lock()
+	defer m.chunkMu.Unlock()
 
+	now := time.Now()
 	chunks := make([]*ChunkInfo, 0, len(file.Chunks))
 	for _, handle := range file.Chunks {
 		if chunk, ok := m.chunks[handle]; ok {
+			// Check if lease has expired and reassign primary if needed
+			if chunk.Primary != nil && now.After(chunk.LeaseExpiration) {
+				m.reassignPrimaryLocked(chunk)
+			}
 			chunks = append(chunks, chunk)
 		}
 	}
 	return chunks, nil
+}
+
+// reassignPrimaryLocked selects a new primary from available replicas
+// Must be called with chunkMu held
+func (m *Master) reassignPrimaryLocked(chunk *ChunkInfo) {
+	if len(chunk.Locations) == 0 {
+		chunk.Primary = nil
+		return
+	}
+
+	// Select the least loaded replica as the new primary
+	m.csMu.RLock()
+	var bestLoc *ChunkLocation
+	var bestScore float64 = 101 // Higher than any possible score
+
+	for i := range chunk.Locations {
+		loc := &chunk.Locations[i]
+		// Check if this server is still alive
+		if cs, ok := m.chunkservers[loc.ServerID]; ok {
+			// Calculate load score (lower is better)
+			score := 50.0 // Default score if no resource data
+			if cs.Resources != nil {
+				score = cs.Resources.CPUUsagePercent*0.4 +
+					cs.Resources.MemoryUsagePercent*0.4 +
+					cs.Resources.DiskUsagePercent*0.2
+			}
+			if score < bestScore {
+				bestScore = score
+				bestLoc = loc
+			}
+		}
+	}
+	m.csMu.RUnlock()
+
+	if bestLoc != nil {
+		oldPrimary := ""
+		if chunk.Primary != nil {
+			oldPrimary = string(chunk.Primary.ServerID)
+		}
+		chunk.Primary = bestLoc
+		chunk.LeaseExpiration = time.Now().Add(LeaseDuration)
+		slog.Info("reassigned primary (lease expired)",
+			"chunk", chunk.Handle,
+			"oldPrimary", oldPrimary,
+			"newPrimary", bestLoc.ServerID,
+			"leaseExpires", chunk.LeaseExpiration)
+	} else {
+		chunk.Primary = nil
+		slog.Warn("no available replicas for primary assignment", "chunk", chunk.Handle)
+	}
+}
+
+// RenewLease extends the lease for a chunk's primary
+// Returns true if the lease was renewed, false if the server is not the current primary
+func (m *Master) RenewLease(handle ChunkHandle, serverID ChunkServerID) bool {
+	m.chunkMu.Lock()
+	defer m.chunkMu.Unlock()
+
+	chunk, exists := m.chunks[handle]
+	if !exists {
+		return false
+	}
+
+	// Only the current primary can renew the lease
+	if chunk.Primary == nil || chunk.Primary.ServerID != serverID {
+		return false
+	}
+
+	chunk.LeaseExpiration = time.Now().Add(LeaseDuration)
+	slog.Debug("lease renewed", "chunk", handle, "primary", serverID, "expires", chunk.LeaseExpiration)
+	return true
 }
 
 // ReportChunk is called by chunkservers to report they have a chunk

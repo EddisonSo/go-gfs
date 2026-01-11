@@ -77,6 +77,18 @@ message ReportCommitResponse {
     string message = 2;
 }
 
+// Lease renewal request from primary chunkserver
+message RenewLeaseRequest {
+    string server_id = 1;
+    string chunk_handle = 2;
+}
+
+message RenewLeaseResponse {
+    bool success = 1;
+    string message = 2;
+    uint64 lease_duration_ms = 3;  // Duration until lease expires (in milliseconds)
+}
+
 // ============ Client -> Master RPCs ============
 
 message CreateFileRequest {
@@ -159,6 +171,7 @@ service Master {
     rpc Register(RegisterRequest) returns (RegisterResponse);
     rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
     rpc ReportCommit(ReportCommitRequest) returns (ReportCommitResponse);
+    rpc RenewLease(RenewLeaseRequest) returns (RenewLeaseResponse);
 
     // File operations
     rpc CreateFile(CreateFileRequest) returns (CreateFileResponse);
