@@ -59,9 +59,20 @@ func (s *GRPCServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*
 		s.master.ReportChunk(ChunkServerID(req.ServerId), ChunkHandle(handle))
 	}
 
+	// Get chunks to delete
+	pendingDeletes := s.master.GetPendingDeletes(ChunkServerID(req.ServerId))
+	chunksToDelete := make([]string, len(pendingDeletes))
+	for i, h := range pendingDeletes {
+		chunksToDelete[i] = string(h)
+	}
+
+	if len(chunksToDelete) > 0 {
+		slog.Info("sending chunks to delete", "serverID", req.ServerId, "chunks", chunksToDelete)
+	}
+
 	return &pb.HeartbeatResponse{
 		Success:        true,
-		ChunksToDelete: []string{}, // TODO: garbage collection
+		ChunksToDelete: chunksToDelete,
 	}, nil
 }
 

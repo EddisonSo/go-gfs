@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 
@@ -15,20 +16,28 @@ import (
 )
 
 var (
-	port int
+	port    int
+	dataDir string
 )
 
 func init() {
 	flag.IntVar(&port, "port", 9000, "Master server port")
+	flag.StringVar(&dataDir, "data", "/data/master", "Data directory for WAL")
 }
 
 func main() {
 	flag.Parse()
 
-	slog.Info("starting master server", "port", port)
+	slog.Info("starting master server", "port", port, "dataDir", dataDir)
 
-	// Create master instance
-	m := master.NewMaster()
+	// Create master instance with WAL
+	walPath := filepath.Join(dataDir, "wal.log")
+	m, err := master.NewMaster(walPath)
+	if err != nil {
+		slog.Error("failed to create master", "error", err)
+		os.Exit(1)
+	}
+	defer m.Close()
 
 	// Create gRPC server
 	grpcServer := grpc.NewServer()

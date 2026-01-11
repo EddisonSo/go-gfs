@@ -146,11 +146,14 @@ func (mc *MasterClient) sendHeartbeat() {
 
 	if err != nil {
 		slog.Error("heartbeat failed", "error", err)
+		// Try to re-register in case master restarted
+		mc.tryReregister()
 		return
 	}
 
 	if !resp.Success {
-		slog.Warn("heartbeat rejected by master")
+		slog.Warn("heartbeat rejected by master, attempting re-registration")
+		mc.tryReregister()
 		return
 	}
 
@@ -163,6 +166,15 @@ func (mc *MasterClient) sendHeartbeat() {
 	}
 
 	slog.Debug("heartbeat sent", "chunks", len(chunks))
+}
+
+// tryReregister attempts to re-register with the master
+func (mc *MasterClient) tryReregister() {
+	if err := mc.Register(); err != nil {
+		slog.Error("re-registration failed", "error", err)
+	} else {
+		slog.Info("re-registered with master after connection loss")
+	}
 }
 
 // scanChunks scans the storage directory for chunk files

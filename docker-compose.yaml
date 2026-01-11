@@ -5,8 +5,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["./master", "-port", "9000"]
+    command: ["./master", "-port", "9000", "-data", "/data/master"]
     network_mode: host
+    volumes:
+      - ./data/master:/data/master
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 9000 || exit 1"]
       interval: 5s

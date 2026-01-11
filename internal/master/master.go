@@ -1,10 +1,13 @@
 package master
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
+
+	"eddisonso.com/go-gfs/internal/master/wal"
 )
 
 // ChunkHandle is a unique identifier for a chunk
@@ -65,6 +68,10 @@ type Master struct {
 	chunkservers map[ChunkServerID]*ChunkLocation
 	csMu         sync.RWMutex
 
+	// Chunks pending deletion per chunkserver
+	pendingDeletes   map[ChunkServerID][]ChunkHandle
+	pendingDeletesMu sync.Mutex
+
 	// Configuration
 	defaultChunkSize  uint64
 	replicationFactor int
@@ -72,18 +79,168 @@ type Master struct {
 	// Chunk handle counter for generating new handles
 	nextChunkHandle uint64
 	handleMu        sync.Mutex
+
+	// Write-ahead log for persistence
+	wal *wal.WAL
 }
 
-// NewMaster creates a new master server
-func NewMaster() *Master {
-	return &Master{
+// NewMaster creates a new master server with WAL at the given path
+func NewMaster(walPath string) (*Master, error) {
+	m := &Master{
 		files:             make(map[string]*FileInfo),
 		chunks:            make(map[ChunkHandle]*ChunkInfo),
 		chunkservers:      make(map[ChunkServerID]*ChunkLocation),
+		pendingDeletes:    make(map[ChunkServerID][]ChunkHandle),
 		defaultChunkSize:  64 << 20, // 64MB
 		replicationFactor: 3,
 		nextChunkHandle:   1,
 	}
+
+	// Initialize WAL
+	w, err := wal.New(walPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize WAL: %w", err)
+	}
+	m.wal = w
+
+	// Replay WAL to restore state
+	if err := m.replayWAL(walPath); err != nil {
+		return nil, fmt.Errorf("failed to replay WAL: %w", err)
+	}
+
+	return m, nil
+}
+
+// replayWAL replays the WAL to restore master state
+func (m *Master) replayWAL(walPath string) error {
+	reader, err := wal.NewReader(walPath)
+	if err != nil {
+		return err
+	}
+	if reader == nil {
+		slog.Info("no WAL to replay")
+		return nil
+	}
+	defer reader.Close()
+
+	entries, err := reader.ReadAll()
+	if err != nil {
+		return err
+	}
+
+	slog.Info("replaying WAL", "entries", len(entries))
+
+	for _, entry := range entries {
+		switch entry.Op {
+		case wal.OpCreateFile:
+			var data wal.CreateFileData
+			if err := json.Unmarshal(entry.Data, &data); err != nil {
+				slog.Warn("failed to unmarshal CREATE_FILE", "error", err)
+				continue
+			}
+			m.replayCreateFile(data.Path, data.ChunkSize)
+
+		case wal.OpDeleteFile:
+			var data wal.DeleteFileData
+			if err := json.Unmarshal(entry.Data, &data); err != nil {
+				slog.Warn("failed to unmarshal DELETE_FILE", "error", err)
+				continue
+			}
+			m.replayDeleteFile(data.Path)
+
+		case wal.OpAddChunk:
+			var data wal.AddChunkData
+			if err := json.Unmarshal(entry.Data, &data); err != nil {
+				slog.Warn("failed to unmarshal ADD_CHUNK", "error", err)
+				continue
+			}
+			m.replayAddChunk(data.Path, data.ChunkHandle)
+
+		case wal.OpCommitChunk:
+			var data wal.CommitChunkData
+			if err := json.Unmarshal(entry.Data, &data); err != nil {
+				slog.Warn("failed to unmarshal COMMIT_CHUNK", "error", err)
+				continue
+			}
+			m.replayCommitChunk(data.ChunkHandle, data.Size)
+
+		case wal.OpSetCounter:
+			var data wal.SetCounterData
+			if err := json.Unmarshal(entry.Data, &data); err != nil {
+				slog.Warn("failed to unmarshal SET_COUNTER", "error", err)
+				continue
+			}
+			m.nextChunkHandle = data.NextChunkHandle
+		}
+	}
+
+	slog.Info("WAL replay complete", "files", len(m.files), "chunks", len(m.chunks))
+	return nil
+}
+
+// replayCreateFile recreates a file from WAL (no WAL logging)
+func (m *Master) replayCreateFile(path string, chunkSize uint64) {
+	now := time.Now()
+	m.files[path] = &FileInfo{
+		Path:       path,
+		Chunks:     []ChunkHandle{},
+		Size:       0,
+		ChunkSize:  chunkSize,
+		CreatedAt:  now,
+		ModifiedAt: now,
+	}
+}
+
+// replayDeleteFile deletes a file from WAL (no WAL logging)
+func (m *Master) replayDeleteFile(path string) {
+	if file, exists := m.files[path]; exists {
+		for _, handle := range file.Chunks {
+			delete(m.chunks, handle)
+		}
+		delete(m.files, path)
+	}
+}
+
+// replayAddChunk adds a chunk from WAL (no WAL logging)
+func (m *Master) replayAddChunk(path, chunkHandle string) {
+	handle := ChunkHandle(chunkHandle)
+	if file, exists := m.files[path]; exists {
+		file.Chunks = append(file.Chunks, handle)
+		m.chunks[handle] = &ChunkInfo{
+			Handle:    handle,
+			FilePath:  path,
+			Locations: []ChunkLocation{},
+			Version:   1,
+			Status:    ChunkPending,
+		}
+	}
+}
+
+// replayCommitChunk commits a chunk from WAL (no WAL logging)
+func (m *Master) replayCommitChunk(chunkHandle string, size uint64) {
+	handle := ChunkHandle(chunkHandle)
+	if chunk, exists := m.chunks[handle]; exists {
+		chunk.Status = ChunkCommitted
+		chunk.Size = size
+		// Update file size
+		if file, exists := m.files[chunk.FilePath]; exists {
+			var totalSize uint64
+			for _, h := range file.Chunks {
+				if c, ok := m.chunks[h]; ok {
+					totalSize += c.Size
+				}
+			}
+			file.Size = totalSize
+		}
+	}
+}
+
+// Close closes the master and its WAL
+func (m *Master) Close() error {
+	if m.wal != nil {
+		return m.wal.Close()
+	}
+	return nil
 }
 
 // RegisterChunkServer registers a chunkserver with the master
@@ -112,6 +269,16 @@ func (m *Master) Heartbeat(id ChunkServerID) bool {
 		return true
 	}
 	return false
+}
+
+// GetPendingDeletes returns and clears the list of chunks to delete for a chunkserver
+func (m *Master) GetPendingDeletes(id ChunkServerID) []ChunkHandle {
+	m.pendingDeletesMu.Lock()
+	defer m.pendingDeletesMu.Unlock()
+
+	chunks := m.pendingDeletes[id]
+	delete(m.pendingDeletes, id)
+	return chunks
 }
 
 // GetChunkServers returns all registered chunkservers
@@ -145,6 +312,11 @@ func (m *Master) CreateFile(path string) (*FileInfo, error) {
 		return nil, fmt.Errorf("file already exists: %s", path)
 	}
 
+	// Log to WAL before applying
+	if err := m.wal.LogCreateFile(path, m.defaultChunkSize); err != nil {
+		return nil, fmt.Errorf("WAL write failed: %w", err)
+	}
+
 	now := time.Now()
 	file := &FileInfo{
 		Path:       path,
@@ -172,17 +344,44 @@ func (m *Master) GetFile(path string) (*FileInfo, error) {
 	return file, nil
 }
 
-// DeleteFile removes a file from the namespace
+// DeleteFile removes a file from the namespace and schedules chunk deletion
 func (m *Master) DeleteFile(path string) error {
 	m.fileMu.Lock()
-	defer m.fileMu.Unlock()
-
-	if _, exists := m.files[path]; !exists {
+	file, exists := m.files[path]
+	if !exists {
+		m.fileMu.Unlock()
 		return fmt.Errorf("file not found: %s", path)
 	}
 
+	// Log to WAL before applying
+	if err := m.wal.LogDeleteFile(path); err != nil {
+		m.fileMu.Unlock()
+		return fmt.Errorf("WAL write failed: %w", err)
+	}
+
+	// Get chunk handles before deleting file
+	chunkHandles := make([]ChunkHandle, len(file.Chunks))
+	copy(chunkHandles, file.Chunks)
+
 	delete(m.files, path)
-	slog.Info("deleted file", "path", path)
+	m.fileMu.Unlock()
+
+	// Remove chunks from registry and schedule deletion on chunkservers
+	m.chunkMu.Lock()
+	m.pendingDeletesMu.Lock()
+	for _, handle := range chunkHandles {
+		if chunk, ok := m.chunks[handle]; ok {
+			// Schedule deletion on each chunkserver that has this chunk
+			for _, loc := range chunk.Locations {
+				m.pendingDeletes[loc.ServerID] = append(m.pendingDeletes[loc.ServerID], handle)
+			}
+			delete(m.chunks, handle)
+		}
+	}
+	m.pendingDeletesMu.Unlock()
+	m.chunkMu.Unlock()
+
+	slog.Info("deleted file", "path", path, "chunks", len(chunkHandles))
 	return nil
 }
 
@@ -210,6 +409,14 @@ func (m *Master) AddChunkToFile(path string) (*ChunkInfo, error) {
 
 	// Generate new chunk handle
 	handle := m.generateChunkHandle()
+
+	// Log to WAL before applying (both the chunk addition and counter update)
+	if err := m.wal.LogSetCounter(m.nextChunkHandle); err != nil {
+		return nil, fmt.Errorf("WAL write failed: %w", err)
+	}
+	if err := m.wal.LogAddChunk(path, string(handle)); err != nil {
+		return nil, fmt.Errorf("WAL write failed: %w", err)
+	}
 
 	// Select replicas for this chunk
 	replicas := m.selectReplicas(m.replicationFactor)
@@ -334,6 +541,12 @@ func (m *Master) ConfirmChunkCommit(serverID ChunkServerID, handle ChunkHandle, 
 	if !exists {
 		m.chunkMu.Unlock()
 		return fmt.Errorf("chunk not found: %s", handle)
+	}
+
+	// Log to WAL before applying
+	if err := m.wal.LogCommitChunk(string(handle), size); err != nil {
+		m.chunkMu.Unlock()
+		return fmt.Errorf("WAL write failed: %w", err)
 	}
 
 	// Update chunk status and size

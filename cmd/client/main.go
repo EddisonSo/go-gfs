@@ -259,6 +259,8 @@ func cmdRead(args []string) {
 
 // ============ write command ============
 
+const maxChunkSize = 64 << 20 // 64MB
+
 func cmdWrite(args []string) {
 	if len(args) < 1 {
 		fmt.Println("Usage: write <path> <data>  OR  write <path> < localfile")
@@ -303,58 +305,85 @@ func cmdWrite(args []string) {
 	// Create file if it doesn't exist
 	client.CreateFile(ctx, &pb.CreateFileRequest{Path: path})
 
-	// Check for existing chunks with space
-	var chunk *pb.ChunkLocationInfo
-	const maxChunkSize = 64 << 20 // 64MB
+	totalWritten := 0
+	remaining := writeData
 
-	locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: path})
-	if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
-		lastChunk := locResp.Chunks[len(locResp.Chunks)-1]
-		if lastChunk.Size+uint64(len(writeData)) <= maxChunkSize {
-			chunk = lastChunk
+	for len(remaining) > 0 {
+		// Determine how much to write in this chunk
+		var chunkData []byte
+		var chunk *pb.ChunkLocationInfo
+
+		// Check for existing chunks with space
+		locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: path})
+		if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
+			lastChunk := locResp.Chunks[len(locResp.Chunks)-1]
+			spaceAvailable := maxChunkSize - lastChunk.Size
+			if spaceAvailable > 0 {
+				chunk = lastChunk
+				// Write only what fits
+				writeSize := uint64(len(remaining))
+				if writeSize > spaceAvailable {
+					writeSize = spaceAvailable
+				}
+				chunkData = remaining[:writeSize]
+				remaining = remaining[writeSize:]
+			}
 		}
-	}
 
-	// Allocate new chunk if needed
-	if chunk == nil {
-		allocResp, err := client.AllocateChunk(ctx, &pb.AllocateChunkRequest{Path: path})
-		if err != nil {
-			fmt.Printf("Failed to allocate chunk: %v\n", err)
+		// Allocate new chunk if needed
+		if chunk == nil {
+			allocResp, err := client.AllocateChunk(ctx, &pb.AllocateChunkRequest{Path: path})
+			if err != nil {
+				fmt.Printf("Failed to allocate chunk: %v\n", err)
+				return
+			}
+			if !allocResp.Success {
+				fmt.Printf("Chunk allocation failed: %s\n", allocResp.Message)
+				return
+			}
+			chunk = allocResp.Chunk
+
+			// Write up to maxChunkSize
+			writeSize := len(remaining)
+			if writeSize > maxChunkSize {
+				writeSize = maxChunkSize
+			}
+			chunkData = remaining[:writeSize]
+			remaining = remaining[writeSize:]
+		}
+
+		// Convert to internal types
+		primary := csstructs.ReplicaIdentifier{
+			ID:              chunk.Primary.ServerId,
+			Hostname:        chunk.Primary.Hostname,
+			DataPort:        int(chunk.Primary.DataPort),
+			ReplicationPort: int(chunk.Primary.ReplicationPort),
+		}
+
+		var replicas []csstructs.ReplicaIdentifier
+		for _, loc := range chunk.Locations {
+			if loc.ServerId != chunk.Primary.ServerId {
+				replicas = append(replicas, csstructs.ReplicaIdentifier{
+					ID:              loc.ServerId,
+					Hostname:        loc.Hostname,
+					DataPort:        int(loc.DataPort),
+					ReplicationPort: int(loc.ReplicationPort),
+				})
+			}
+		}
+
+		if err := performWrite(primary, replicas, chunk.ChunkHandle, chunkData, -1); err != nil {
+			fmt.Printf("Write failed: %v\n", err)
 			return
 		}
-		if !allocResp.Success {
-			fmt.Printf("Chunk allocation failed: %s\n", allocResp.Message)
-			return
-		}
-		chunk = allocResp.Chunk
-	}
 
-	// Convert to internal types
-	primary := csstructs.ReplicaIdentifier{
-		ID:              chunk.Primary.ServerId,
-		Hostname:        chunk.Primary.Hostname,
-		DataPort:        int(chunk.Primary.DataPort),
-		ReplicationPort: int(chunk.Primary.ReplicationPort),
-	}
-
-	var replicas []csstructs.ReplicaIdentifier
-	for _, loc := range chunk.Locations {
-		if loc.ServerId != chunk.Primary.ServerId {
-			replicas = append(replicas, csstructs.ReplicaIdentifier{
-				ID:              loc.ServerId,
-				Hostname:        loc.Hostname,
-				DataPort:        int(loc.DataPort),
-				ReplicationPort: int(loc.ReplicationPort),
-			})
+		totalWritten += len(chunkData)
+		if len(remaining) > 0 {
+			fmt.Printf("  Wrote chunk %s (%d bytes), %d bytes remaining...\n", chunk.ChunkHandle, len(chunkData), len(remaining))
 		}
 	}
 
-	if err := performWrite(primary, replicas, chunk.ChunkHandle, writeData, -1); err != nil {
-		fmt.Printf("Write failed: %v\n", err)
-		return
-	}
-
-	fmt.Printf("Wrote %d bytes to %s\n", len(writeData), path)
+	fmt.Printf("Wrote %d bytes to %s\n", totalWritten, path)
 }
 
 // ============ rm command ============
