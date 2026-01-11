@@ -12,12 +12,14 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "eddisonso.com/go-gfs/gen/master"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -27,6 +29,218 @@ var (
 	client     pb.MasterClient
 	conn       *grpc.ClientConn
 )
+
+// ============ Progress Bar ============
+
+// TransferProgress tracks and displays transfer progress
+type TransferProgress struct {
+	total       int64
+	current     int64
+	startTime   time.Time
+	lastUpdate  time.Time
+	operation   string // "Uploading" or "Downloading"
+	done        chan struct{}
+	mu          sync.Mutex
+	isTerminal  bool
+	termWidth   int
+}
+
+// NewTransferProgress creates a new progress tracker
+func NewTransferProgress(total int64, operation string) *TransferProgress {
+	width := 40
+	isTerminal := term.IsTerminal(int(os.Stdout.Fd()))
+	if isTerminal {
+		if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+			width = w
+		}
+	}
+	return &TransferProgress{
+		total:      total,
+		operation:  operation,
+		startTime:  time.Now(),
+		lastUpdate: time.Now(),
+		done:       make(chan struct{}),
+		isTerminal: isTerminal,
+		termWidth:  width,
+	}
+}
+
+// Update sets the current progress
+func (p *TransferProgress) Update(current int64) {
+	p.mu.Lock()
+	p.current = current
+	p.mu.Unlock()
+}
+
+// Add increments the current progress
+func (p *TransferProgress) Add(delta int64) {
+	p.mu.Lock()
+	p.current += delta
+	p.mu.Unlock()
+}
+
+// Start begins rendering the progress bar
+func (p *TransferProgress) Start() {
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-p.done:
+				p.render(true)
+				return
+			case <-ticker.C:
+				p.render(false)
+			}
+		}
+	}()
+}
+
+// Finish stops the progress bar and prints final state
+func (p *TransferProgress) Finish() {
+	close(p.done)
+	time.Sleep(50 * time.Millisecond) // Allow final render
+}
+
+func (p *TransferProgress) render(final bool) {
+	p.mu.Lock()
+	current := p.current
+	total := p.total
+	p.mu.Unlock()
+
+	elapsed := time.Since(p.startTime).Seconds()
+	if elapsed < 0.001 {
+		elapsed = 0.001
+	}
+
+	percent := float64(0)
+	if total > 0 {
+		percent = float64(current) / float64(total) * 100
+	}
+
+	// Calculate speed
+	speed := float64(current) / elapsed
+	speedStr := formatBytes(int64(speed)) + "/s"
+
+	// Calculate ETA
+	eta := ""
+	if speed > 0 && current < total {
+		remaining := float64(total-current) / speed
+		eta = formatDuration(time.Duration(remaining) * time.Second)
+	}
+
+	// Build progress bar
+	barWidth := 30
+	if p.termWidth < 80 {
+		barWidth = 20
+	}
+
+	filled := int(percent / 100 * float64(barWidth))
+	if filled > barWidth {
+		filled = barWidth
+	}
+
+	bar := strings.Repeat("=", filled)
+	if filled < barWidth && !final {
+		bar += ">"
+		bar += strings.Repeat(" ", barWidth-filled-1)
+	} else if filled < barWidth {
+		bar += strings.Repeat(" ", barWidth-filled)
+	}
+
+	// Format sizes
+	currentStr := formatBytes(current)
+	totalStr := formatBytes(total)
+
+	// Build output line
+	line := fmt.Sprintf("\r%s [%s] %5.1f%% %s/%s %s",
+		p.operation, bar, percent, currentStr, totalStr, speedStr)
+	if eta != "" && !final {
+		line += fmt.Sprintf(" ETA %s", eta)
+	}
+
+	// Pad with spaces to clear previous longer output
+	if len(line) < p.termWidth {
+		line += strings.Repeat(" ", p.termWidth-len(line))
+	}
+
+	if p.isTerminal {
+		fmt.Print(line)
+		if final {
+			fmt.Println()
+		}
+	} else if final {
+		// Non-terminal: just print final summary
+		fmt.Printf("%s: %s (%s)\n", p.operation, totalStr, speedStr)
+	}
+}
+
+// formatBytes formats bytes as human-readable string
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// formatDuration formats duration as human-readable string
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// ProgressWriter wraps a writer and updates progress
+type ProgressWriter struct {
+	w        io.Writer
+	progress *TransferProgress
+}
+
+func (pw *ProgressWriter) Write(p []byte) (int, error) {
+	n, err := pw.w.Write(p)
+	if n > 0 {
+		pw.progress.Add(int64(n))
+	}
+	return n, err
+}
+
+// ProgressReader wraps a reader and updates progress
+type ProgressReader struct {
+	r        io.Reader
+	progress *TransferProgress
+}
+
+func (pr *ProgressReader) Read(p []byte) (int, error) {
+	n, err := pr.r.Read(p)
+	if n > 0 {
+		pr.progress.Add(int64(n))
+	}
+	return n, err
+}
+
+// AtomicCounter for thread-safe progress updates
+type AtomicCounter struct {
+	value int64
+}
+
+func (c *AtomicCounter) Add(delta int64) int64 {
+	return atomic.AddInt64(&c.value, delta)
+}
+
+func (c *AtomicCounter) Load() int64 {
+	return atomic.LoadInt64(&c.value)
+}
 
 func main() {
 	masterAddr = "localhost:9000"
@@ -296,6 +510,21 @@ func cmdRead(args []string) {
 		return
 	}
 
+	// Calculate total file size for progress bar
+	var totalSize int64
+	for _, chunk := range locResp.Chunks {
+		totalSize += int64(chunk.Size)
+	}
+
+	// Start progress bar for larger files (> 1MB) when writing to file
+	var progress *TransferProgress
+	var bytesRead AtomicCounter
+	if totalSize > 1024*1024 && outputFile != "" {
+		progress = NewTransferProgress(totalSize, "Downloading")
+		progress.Start()
+		defer progress.Finish()
+	}
+
 	// Get server load information for weighted replica selection
 	loads := getServerLoads(ctx)
 
@@ -330,10 +559,15 @@ func cmdRead(args []string) {
 
 			// Read into buffer
 			var buf bytes.Buffer
-			_, err := performReadStream(replica, chunk.ChunkHandle, &buf)
+			n, err := performReadStream(replica, chunk.ChunkHandle, &buf)
 			if err != nil {
 				results <- chunkReadResult{index: index, err: fmt.Errorf("failed to read chunk %s from %s: %w", chunk.ChunkHandle, server.ServerId, err)}
 				return
+			}
+
+			// Update progress
+			if progress != nil {
+				progress.Update(bytesRead.Add(n))
 			}
 
 			results <- chunkReadResult{index: index, data: buf.Bytes()}
@@ -391,7 +625,8 @@ func cmdRead(args []string) {
 	// Add newline to stdout if needed (for text files)
 	if outputFile == "" {
 		fmt.Println()
-	} else {
+	} else if progress == nil {
+		// Only print message if we didn't show a progress bar
 		fmt.Printf("Wrote %d bytes to %s\n", totalBytes, outputFile)
 	}
 }
@@ -464,6 +699,14 @@ func writeFromFile(_ context.Context, gfsPath, localPath string) (int64, error) 
 		return 0, fmt.Errorf("failed to stat file: %w", err)
 	}
 	totalSize := stat.Size()
+
+	// Start progress bar for larger files (> 1MB)
+	var progress *TransferProgress
+	if totalSize > 1024*1024 {
+		progress = NewTransferProgress(totalSize, "Uploading")
+		progress.Start()
+		defer progress.Finish()
+	}
 
 	var totalWritten int64
 	buf := make([]byte, maxChunkSize) // Reusable buffer
@@ -539,9 +782,10 @@ func writeFromFile(_ context.Context, gfsPath, localPath string) (int64, error) 
 		}
 
 		totalWritten += int64(n)
-		remaining := totalSize - totalWritten
-		if remaining > 0 {
-			fmt.Printf("  Wrote chunk %s (%d bytes), %d bytes remaining...\n", chunk.ChunkHandle, n, remaining)
+
+		// Update progress bar or print status
+		if progress != nil {
+			progress.Update(totalWritten)
 		}
 	}
 
