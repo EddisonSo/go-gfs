@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	pb "eddisonso.com/go-gfs/gen/chunkreplication"
@@ -24,7 +25,7 @@ func SendCommitToReplica(replica csstructs.ReplicaIdentifier, opID string) error
 
 	client := pb.NewReplicatorClient(conn)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	req := &pb.Commit{
@@ -46,16 +47,25 @@ func SendCommitToReplica(replica csstructs.ReplicaIdentifier, opID string) error
 	return nil
 }
 
-// SendCommitToAllReplicas sends COMMIT to all replicas and returns errors for any failures
+// SendCommitToAllReplicas sends COMMIT to all replicas IN PARALLEL and returns errors for any failures
 func SendCommitToAllReplicas(replicas []csstructs.ReplicaIdentifier, opID string) []error {
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 	errors := make([]error, 0)
 
 	for _, replica := range replicas {
-		if err := SendCommitToReplica(replica, opID); err != nil {
-			slog.Error("failed to commit on replica", "replica", replica.ID, "error", err)
-			errors = append(errors, err)
-		}
+		wg.Add(1)
+		go func(r csstructs.ReplicaIdentifier) {
+			defer wg.Done()
+			if err := SendCommitToReplica(r, opID); err != nil {
+				slog.Error("failed to commit on replica", "replica", r.ID, "error", err)
+				mu.Lock()
+				errors = append(errors, err)
+				mu.Unlock()
+			}
+		}(replica)
 	}
 
+	wg.Wait()
 	return errors
 }

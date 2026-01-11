@@ -492,32 +492,41 @@ func (m *Master) ListFiles() []*FileInfo {
 
 // AddChunkToFile adds a new chunk to a file and returns chunk info with replica locations
 func (m *Master) AddChunkToFile(path string) (*ChunkInfo, error) {
-	m.fileMu.Lock()
-	defer m.fileMu.Unlock()
-
-	file, exists := m.files[path]
+	// Check file exists first (brief read lock)
+	m.fileMu.RLock()
+	_, exists := m.files[path]
+	m.fileMu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("file not found: %s", path)
 	}
 
-	// Generate new chunk handle
+	// Generate chunk handle (thread-safe, no lock needed)
 	handle := m.generateChunkHandle()
 
-	// Log to WAL before applying
-	if err := m.wal.LogAddChunk(path, string(handle)); err != nil {
-		return nil, fmt.Errorf("WAL write failed: %w", err)
-	}
-
-	// Select replicas for this chunk
+	// Select replicas BEFORE taking fileMu to avoid lock contention
 	replicas := m.selectReplicas(m.replicationFactor)
 	if len(replicas) < m.replicationFactor {
 		slog.Warn("insufficient chunkservers for full replication",
 			"available", len(replicas),
 			"required", m.replicationFactor)
 	}
-
 	if len(replicas) == 0 {
 		return nil, fmt.Errorf("no chunkservers available")
+	}
+
+	// Log to WAL OUTSIDE of locks to avoid blocking
+	if err := m.wal.LogAddChunk(path, string(handle)); err != nil {
+		return nil, fmt.Errorf("WAL write failed: %w", err)
+	}
+
+	// Now acquire locks and apply changes
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+
+	// Re-check file still exists
+	file, exists := m.files[path]
+	if !exists {
+		return nil, fmt.Errorf("file not found: %s", path)
 	}
 
 	// Create chunk info with lease
@@ -703,23 +712,29 @@ func (m *Master) ReportChunk(serverID ChunkServerID, handle ChunkHandle) {
 
 // ConfirmChunkCommit is called by chunkserver after successful 2PC commit
 func (m *Master) ConfirmChunkCommit(serverID ChunkServerID, handle ChunkHandle, size uint64) error {
-	m.chunkMu.Lock()
+	// Check chunk exists first (brief lock)
+	m.chunkMu.RLock()
 	chunk, exists := m.chunks[handle]
 	if !exists {
-		m.chunkMu.Unlock()
+		m.chunkMu.RUnlock()
 		return fmt.Errorf("chunk not found: %s", handle)
 	}
+	filePath := chunk.FilePath
+	m.chunkMu.RUnlock()
 
-	// Log to WAL before applying
+	// Log to WAL OUTSIDE of locks to avoid blocking other operations
 	if err := m.wal.LogCommitChunk(string(handle), size); err != nil {
-		m.chunkMu.Unlock()
 		return fmt.Errorf("WAL write failed: %w", err)
 	}
 
-	// Update chunk status and size
-	chunk.Status = ChunkCommitted
-	chunk.Size = size
-	filePath := chunk.FilePath
+	// Now update chunk status (brief lock)
+	m.chunkMu.Lock()
+	// Re-check in case chunk was deleted
+	chunk, exists = m.chunks[handle]
+	if exists {
+		chunk.Status = ChunkCommitted
+		chunk.Size = size
+	}
 	m.chunkMu.Unlock()
 
 	// Update file size

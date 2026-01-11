@@ -133,7 +133,7 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		slog.Info("append write", "opID", opId, "offset", offset, "sequence", sequence)
 	}
 
-	stagedchunk := stagedchunk.NewStagedChunk(
+	sc := stagedchunk.NewStagedChunk(
 		claims.ChunkHandle,
 		opId,
 		claims.Filesize,
@@ -141,15 +141,15 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		sequence,
 		fds.ChunkServerConfig.Dir,
 	)
-	if stagedchunk == nil {
+	if sc == nil {
 		slog.Error("failed to create staged chunk", "opId", opId)
 		return
 	}
 
-	fds.ChunkStagingTrackingService.AddStagedChunk(stagedchunk)
+	fds.ChunkStagingTrackingService.AddStagedChunk(sc)
 
-	coordinator := fanoutcoordinator.NewFanoutCoordinator(claims.Replicas, stagedchunk)
-	coordinator.SetStagedChunk(stagedchunk)
+	coordinator := fanoutcoordinator.NewFanoutCoordinator(claims.Replicas, sc)
+	coordinator.SetStagedChunk(sc)
 	coordinator.AddReplicas(claims.Replicas)
 
 	// Send initial response with opID and offset
@@ -170,7 +170,7 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	slog.Info("data replication complete, waiting for quorum", "opID", opId, "chunkHandle", claims.ChunkHandle, "replicationFactor", 3)
 
 	// Wait for quorum (2 out of 3 replicas for RF=3)
-	if !fds.waitForQuorum(stagedchunk, 3, 10) {
+	if !fds.waitForQuorum(sc, 3, 10) {
 		slog.Error("quorum not reached", "opID", opId)
 		// Send failure response
 		conn.Write([]byte{0}) // 0 = failure
@@ -188,17 +188,32 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		}
 	}
 
-	// Send COMMIT to all replicas
-	if err := fds.commitToReplicas(claims.Replicas, opId); err != nil {
-		slog.Error("failed to commit to replicas", "error", err)
+	// Commit replicas AND primary in parallel for better performance
+	var replicaErr error
+	var primaryErr error
+	var committed []*stagedchunk.StagedChunk
+
+	done := make(chan struct{}, 2)
+	go func() {
+		replicaErr = fds.commitToReplicas(claims.Replicas, opId)
+		done <- struct{}{}
+	}()
+	go func() {
+		committed, primaryErr = fds.ChunkStagingTrackingService.CommitInOrder(sc)
+		done <- struct{}{}
+	}()
+
+	// Wait for both to complete
+	<-done
+	<-done
+
+	if replicaErr != nil {
+		slog.Error("failed to commit to replicas", "error", replicaErr)
 		conn.Write([]byte{0}) // 0 = failure
 		return
 	}
-
-	// Commit on primary (in sequence order)
-	committed, err := fds.ChunkStagingTrackingService.CommitInOrder(stagedchunk)
-	if err != nil {
-		slog.Error("failed to commit on primary", "error", err)
+	if primaryErr != nil {
+		slog.Error("failed to commit on primary", "error", primaryErr)
 		conn.Write([]byte{0}) // 0 = failure
 		return
 	}

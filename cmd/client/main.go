@@ -154,7 +154,7 @@ Examples:
 }
 
 func getContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 30*time.Second)
+	return context.WithTimeout(context.Background(), 120*time.Second)
 }
 
 // ============ ls command ============
@@ -451,7 +451,7 @@ func cmdWrite(args []string) {
 }
 
 // writeFromFile streams data from a local file to GFS without loading it all into memory
-func writeFromFile(ctx context.Context, gfsPath, localPath string) (int64, error) {
+func writeFromFile(_ context.Context, gfsPath, localPath string) (int64, error) {
 	file, err := os.Open(localPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to open file: %w", err)
@@ -468,12 +468,18 @@ func writeFromFile(ctx context.Context, gfsPath, localPath string) (int64, error
 	var totalWritten int64
 	buf := make([]byte, maxChunkSize) // Reusable buffer
 
+	// Per-chunk timeout - resets on each successful chunk write
+	const chunkTimeout = 60 * time.Second
+
 	for totalWritten < totalSize {
+		// Create fresh context for each chunk operation
+		chunkCtx, cancel := context.WithTimeout(context.Background(), chunkTimeout)
+
 		// Check for existing chunks with space
 		var chunk *pb.ChunkLocationInfo
 		var writeSize int64
 
-		locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: gfsPath})
+		locResp, err := client.GetChunkLocations(chunkCtx, &pb.GetChunkLocationsRequest{Path: gfsPath})
 		if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
 			lastChunk := locResp.Chunks[len(locResp.Chunks)-1]
 			spaceAvailable := int64(maxChunkSize - lastChunk.Size)
@@ -485,16 +491,19 @@ func writeFromFile(ctx context.Context, gfsPath, localPath string) (int64, error
 
 		// Allocate new chunk if needed
 		if chunk == nil {
-			allocResp, err := client.AllocateChunk(ctx, &pb.AllocateChunkRequest{Path: gfsPath})
+			allocResp, err := client.AllocateChunk(chunkCtx, &pb.AllocateChunkRequest{Path: gfsPath})
 			if err != nil {
+				cancel()
 				return totalWritten, fmt.Errorf("failed to allocate chunk: %w", err)
 			}
 			if !allocResp.Success {
+				cancel()
 				return totalWritten, fmt.Errorf("chunk allocation failed: %s", allocResp.Message)
 			}
 			chunk = allocResp.Chunk
 			writeSize = min(totalSize-totalWritten, maxChunkSize)
 		}
+		cancel() // Done with gRPC calls for this chunk
 
 		// Read data from file into buffer
 		n, err := io.ReadFull(file, buf[:writeSize])
@@ -540,16 +549,22 @@ func writeFromFile(ctx context.Context, gfsPath, localPath string) (int64, error
 }
 
 // writeData_inline writes small inline data (for string arguments)
-func writeData_inline(ctx context.Context, gfsPath string, data []byte) (int, error) {
+func writeData_inline(_ context.Context, gfsPath string, data []byte) (int, error) {
 	totalWritten := 0
 	remaining := data
 
+	// Per-chunk timeout - resets on each successful chunk write
+	const chunkTimeout = 60 * time.Second
+
 	for len(remaining) > 0 {
+		// Create fresh context for each chunk operation
+		chunkCtx, cancel := context.WithTimeout(context.Background(), chunkTimeout)
+
 		var chunkData []byte
 		var chunk *pb.ChunkLocationInfo
 
 		// Check for existing chunks with space
-		locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: gfsPath})
+		locResp, err := client.GetChunkLocations(chunkCtx, &pb.GetChunkLocationsRequest{Path: gfsPath})
 		if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
 			lastChunk := locResp.Chunks[len(locResp.Chunks)-1]
 			spaceAvailable := maxChunkSize - lastChunk.Size
@@ -566,11 +581,13 @@ func writeData_inline(ctx context.Context, gfsPath string, data []byte) (int, er
 
 		// Allocate new chunk if needed
 		if chunk == nil {
-			allocResp, err := client.AllocateChunk(ctx, &pb.AllocateChunkRequest{Path: gfsPath})
+			allocResp, err := client.AllocateChunk(chunkCtx, &pb.AllocateChunkRequest{Path: gfsPath})
 			if err != nil {
+				cancel()
 				return totalWritten, fmt.Errorf("failed to allocate chunk: %w", err)
 			}
 			if !allocResp.Success {
+				cancel()
 				return totalWritten, fmt.Errorf("chunk allocation failed: %s", allocResp.Message)
 			}
 			chunk = allocResp.Chunk
@@ -582,6 +599,7 @@ func writeData_inline(ctx context.Context, gfsPath string, data []byte) (int, er
 			chunkData = remaining[:writeSize]
 			remaining = remaining[writeSize:]
 		}
+		cancel() // Done with gRPC calls for this chunk
 
 		// Convert to internal types
 		primary := csstructs.ReplicaIdentifier{

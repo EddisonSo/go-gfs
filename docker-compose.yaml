@@ -1,6 +1,6 @@
 services:
   master:
-    image: gfs-master
+    image: eddisonso/gfs-master:latest
     container_name: master
     build:
       context: .
@@ -25,7 +25,7 @@ services:
           path: ./proto
 
   chunkserver1:
-    image: gfs-chunkserver
+    image: eddisonso/gfs-chunkserver:latest
     container_name: chunkserver1
     build:
       context: .
@@ -47,7 +47,7 @@ services:
           path: ./proto
 
   chunkserver2:
-    image: gfs-chunkserver
+    image: eddisonso/gfs-chunkserver:latest
     container_name: chunkserver2
     build:
       context: .
@@ -69,7 +69,7 @@ services:
           path: ./proto
 
   chunkserver3:
-    image: gfs-chunkserver
+    image: eddisonso/gfs-chunkserver:latest
     container_name: chunkserver3
     build:
       context: .
