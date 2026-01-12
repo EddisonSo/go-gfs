@@ -2,47 +2,36 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"io"
-	"math/rand"
-	"net"
 	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	pb "eddisonso.com/go-gfs/gen/master"
-	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
-	"eddisonso.com/go-gfs/internal/chunkserver/secrets"
-	"github.com/golang-jwt/jwt/v5"
+	gfs "eddisonso.com/go-gfs/pkg/go-gfs-sdk"
 	"golang.org/x/term"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 var (
 	masterAddr string
-	client     pb.MasterClient
-	conn       *grpc.ClientConn
+	client     *gfs.Client
 )
 
 // ============ Progress Bar ============
 
 // TransferProgress tracks and displays transfer progress
 type TransferProgress struct {
-	total       int64
-	current     int64
-	startTime   time.Time
-	lastUpdate  time.Time
-	operation   string // "Uploading" or "Downloading"
-	done        chan struct{}
-	mu          sync.Mutex
-	isTerminal  bool
-	termWidth   int
+	total      int64
+	current    int64
+	startTime  time.Time
+	lastUpdate time.Time
+	operation  string // "Uploading" or "Downloading"
+	done       chan struct{}
+	mu         sync.Mutex
+	isTerminal bool
+	termWidth  int
 }
 
 // NewTransferProgress creates a new progress tracker
@@ -229,19 +218,6 @@ func (pr *ProgressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// AtomicCounter for thread-safe progress updates
-type AtomicCounter struct {
-	value int64
-}
-
-func (c *AtomicCounter) Add(delta int64) int64 {
-	return atomic.AddInt64(&c.value, delta)
-}
-
-func (c *AtomicCounter) Load() int64 {
-	return atomic.LoadInt64(&c.value)
-}
-
 func main() {
 	masterAddr = "localhost:9000"
 
@@ -252,21 +228,21 @@ func main() {
 		}
 	}
 
-	// Connect to master
-	var err error
-	conn, err = grpc.NewClient(masterAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create connection: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	client = pb.NewMasterClient(conn)
-
-	// Verify connection by making a test RPC call
+	// Connect to master using SDK
 	fmt.Printf("Connecting to master at %s...\n", masterAddr)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	_, err = client.ListFiles(ctx, &pb.ListFilesRequest{})
+	var err error
+	client, err = gfs.New(ctx, masterAddr)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to connect to master: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	// Verify connection by making a test call
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	_, err = client.ListFiles(ctx, "")
 	cancel()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to master: %v\n", err)
@@ -387,97 +363,23 @@ func cmdLs(args []string) {
 		prefix = args[0]
 	}
 
-	resp, err := client.ListFiles(ctx, &pb.ListFilesRequest{Prefix: prefix})
+	files, err := client.ListFiles(ctx, prefix)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
 
-	if len(resp.Files) == 0 {
+	if len(files) == 0 {
 		fmt.Println("No files found")
 		return
 	}
 
-	for _, f := range resp.Files {
+	for _, f := range files {
 		fmt.Printf("%s\t%d chunks\t%d bytes\n", f.Path, len(f.ChunkHandles), f.Size)
 	}
 }
 
 // ============ read command ============
-
-// getServerLoads fetches cluster pressure and returns a map of server ID -> load score
-func getServerLoads(ctx context.Context) map[string]float64 {
-	loads := make(map[string]float64)
-
-	resp, err := client.GetClusterPressure(ctx, &pb.GetClusterPressureRequest{})
-	if err != nil {
-		return loads
-	}
-
-	for _, server := range resp.Servers {
-		if !server.IsAlive || server.Resources == nil {
-			continue
-		}
-		// Combined score: CPU 40%, Memory 40%, Disk 20%
-		r := server.Resources
-		score := r.CpuUsagePercent*0.4 + r.MemoryUsagePercent*0.4 + r.DiskUsagePercent*0.2
-		loads[server.Server.ServerId] = score
-	}
-
-	return loads
-}
-
-// selectReplicaByLoad selects a replica using weighted random selection
-// Servers with lower load have higher probability of being selected
-func selectReplicaByLoad(locations []*pb.ChunkServerInfo, loads map[string]float64) *pb.ChunkServerInfo {
-	if len(locations) == 0 {
-		return nil
-	}
-	if len(locations) == 1 {
-		return locations[0]
-	}
-
-	// Calculate weights (inverse of load, so lower load = higher weight)
-	type weightedServer struct {
-		server *pb.ChunkServerInfo
-		weight float64
-	}
-
-	servers := make([]weightedServer, 0, len(locations))
-	var totalWeight float64
-
-	for _, loc := range locations {
-		load, ok := loads[loc.ServerId]
-		if !ok {
-			load = 50 // Default to 50% if no data
-		}
-		// Weight is inverse of load: (100 - load) gives us 0-100 where higher = less loaded
-		// Add 1 to avoid zero weights
-		weight := (100 - load) + 1
-		servers = append(servers, weightedServer{server: loc, weight: weight})
-		totalWeight += weight
-	}
-
-	// Weighted random selection
-	r := rand.Float64() * totalWeight
-	var cumulative float64
-	for _, ws := range servers {
-		cumulative += ws.weight
-		if r <= cumulative {
-			return ws.server
-		}
-	}
-
-	// Fallback to last server
-	return servers[len(servers)-1].server
-}
-
-// chunkReadResult holds the result of reading a single chunk
-type chunkReadResult struct {
-	index int
-	data  []byte
-	err   error
-}
 
 func cmdRead(args []string) {
 	if len(args) < 1 {
@@ -499,111 +401,16 @@ func cmdRead(args []string) {
 	ctx, cancel := getContext()
 	defer cancel()
 
-	// Get chunk locations
-	locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: path})
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-		return
-	}
-	if !locResp.Success {
-		fmt.Printf("Error: %s\n", locResp.Message)
-		return
-	}
-
-	if len(locResp.Chunks) == 0 {
-		fmt.Println("No chunks found for file")
-		return
-	}
-
-	// Calculate total file size for progress bar
+	// Get file info for size (for progress bar)
 	var totalSize int64
-	for _, chunk := range locResp.Chunks {
-		totalSize += int64(chunk.Size)
-	}
-
-	// Start progress bar for larger files (> 1MB) when writing to file
-	var progress *TransferProgress
-	var bytesRead AtomicCounter
-	if totalSize > 1024*1024 && outputFile != "" {
-		progress = NewTransferProgress(totalSize, "Downloading")
-		progress.Start()
-		defer progress.Finish()
-	}
-
-	// Get server load information for weighted replica selection
-	loads := getServerLoads(ctx)
-
-	// Read all chunks in parallel
-	results := make(chan chunkReadResult, len(locResp.Chunks))
-	var wg sync.WaitGroup
-
-	for i, chunk := range locResp.Chunks {
-		wg.Add(1)
-		go func(index int, chunk *pb.ChunkLocationInfo) {
-			defer wg.Done()
-
-			// Select replica based on load (prefer less loaded servers)
-			var server *pb.ChunkServerInfo
-			if len(chunk.Locations) > 0 {
-				server = selectReplicaByLoad(chunk.Locations, loads)
-			} else if chunk.Primary != nil {
-				server = chunk.Primary
-			}
-
-			if server == nil {
-				results <- chunkReadResult{index: index, err: fmt.Errorf("no available servers for chunk %s", chunk.ChunkHandle)}
-				return
-			}
-
-			replica := csstructs.ReplicaIdentifier{
-				ID:              server.ServerId,
-				Hostname:        server.Hostname,
-				DataPort:        int(server.DataPort),
-				ReplicationPort: int(server.ReplicationPort),
-			}
-
-			// Read into buffer
-			var buf bytes.Buffer
-			n, err := performReadStream(replica, chunk.ChunkHandle, &buf)
-			if err != nil {
-				results <- chunkReadResult{index: index, err: fmt.Errorf("failed to read chunk %s from %s: %w", chunk.ChunkHandle, server.ServerId, err)}
-				return
-			}
-
-			// Update progress
-			if progress != nil {
-				progress.Update(bytesRead.Add(n))
-			}
-
-			results <- chunkReadResult{index: index, data: buf.Bytes()}
-		}(i, chunk)
-	}
-
-	// Close results channel when all goroutines complete
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Collect results
-	chunkData := make([][]byte, len(locResp.Chunks))
-	var readErr error
-	for result := range results {
-		if result.err != nil {
-			readErr = result.err
-			continue
-		}
-		chunkData[result.index] = result.data
-	}
-
-	if readErr != nil {
-		fmt.Printf("Error: %v\n", readErr)
-		return
+	if fileInfo, err := client.GetFile(ctx, path); err == nil {
+		totalSize = int64(fileInfo.Size)
 	}
 
 	// Set up output writer
 	var output io.Writer
 	var outFile *os.File
+	var err error
 	if outputFile != "" {
 		outFile, err = os.Create(outputFile)
 		if err != nil {
@@ -616,15 +423,20 @@ func cmdRead(args []string) {
 		output = os.Stdout
 	}
 
-	// Write chunks in order
-	var totalBytes int64
-	for _, data := range chunkData {
-		n, err := output.Write(data)
-		if err != nil {
-			fmt.Printf("Failed to write output: %v\n", err)
-			return
-		}
-		totalBytes += int64(n)
+	// Start progress bar for larger files (> 1MB) when writing to file
+	var progress *TransferProgress
+	if totalSize > 1024*1024 && outputFile != "" {
+		progress = NewTransferProgress(totalSize, "Downloading")
+		progress.Start()
+		defer progress.Finish()
+		output = &ProgressWriter{w: output, progress: progress}
+	}
+
+	// Read using SDK
+	n, err := client.ReadTo(ctx, path, output)
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		return
 	}
 
 	// Add newline to stdout if needed (for text files)
@@ -632,13 +444,11 @@ func cmdRead(args []string) {
 		fmt.Println()
 	} else if progress == nil {
 		// Only print message if we didn't show a progress bar
-		fmt.Printf("Wrote %d bytes to %s\n", totalBytes, outputFile)
+		fmt.Printf("Wrote %d bytes to %s\n", n, outputFile)
 	}
 }
 
 // ============ write command ============
-
-const maxChunkSize = 64 << 20 // 64MB
 
 func cmdWrite(args []string) {
 	if len(args) < 1 {
@@ -661,10 +471,10 @@ func cmdWrite(args []string) {
 	defer cancel()
 
 	// Create file if it doesn't exist
-	client.CreateFile(ctx, &pb.CreateFileRequest{Path: path})
+	client.CreateFile(ctx, path)
 
 	if inputFile != "" {
-		// Stream from file
+		// Stream from file using SDK
 		totalWritten, err := writeFromFile(ctx, path, inputFile)
 		if err != nil {
 			fmt.Printf("Write failed: %v\n", err)
@@ -678,209 +488,51 @@ func cmdWrite(args []string) {
 			fmt.Println("No data to write")
 			return
 		}
-		totalWritten, err := writeData_inline(ctx, path, writeData)
+		n, err := client.Write(ctx, path, writeData)
 		if err != nil {
 			fmt.Printf("Write failed: %v\n", err)
 			return
 		}
-		fmt.Printf("Wrote %d bytes to %s\n", totalWritten, path)
+		fmt.Printf("Wrote %d bytes to %s\n", n, path)
 	} else {
 		fmt.Println("Usage: write <path> <data>  OR  write <path> < localfile")
 		return
 	}
 }
 
-// writeFromFile streams data from a local file to GFS without loading it all into memory
-func writeFromFile(_ context.Context, gfsPath, localPath string) (int64, error) {
+// writeFromFile streams data from a local file to GFS using the SDK
+func writeFromFile(ctx context.Context, gfsPath, localPath string) (int64, error) {
 	file, err := os.Open(localPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to open file: %w", err)
 	}
 	defer file.Close()
 
-	// Get file size for progress reporting
+	// Get file size for progress reporting and pre-allocation
 	stat, err := file.Stat()
 	if err != nil {
 		return 0, fmt.Errorf("failed to stat file: %w", err)
 	}
 	totalSize := stat.Size()
 
+	// Pre-allocate chunks to avoid delays during upload
+	prepared, err := client.PrepareUpload(ctx, gfsPath, totalSize)
+	if err != nil {
+		return 0, fmt.Errorf("failed to prepare upload: %w", err)
+	}
+
 	// Start progress bar for larger files (> 1MB)
 	var progress *TransferProgress
+	var reader io.Reader = file
 	if totalSize > 1024*1024 {
 		progress = NewTransferProgress(totalSize, "Uploading")
 		progress.Start()
 		defer progress.Finish()
+		reader = &ProgressReader{r: file, progress: progress}
 	}
 
-	var totalWritten int64
-	buf := make([]byte, maxChunkSize) // Reusable buffer
-
-	// Per-chunk timeout - resets on each successful chunk write
-	const chunkTimeout = 60 * time.Second
-
-	for totalWritten < totalSize {
-		// Create fresh context for each chunk operation
-		chunkCtx, cancel := context.WithTimeout(context.Background(), chunkTimeout)
-
-		// Check for existing chunks with space
-		var chunk *pb.ChunkLocationInfo
-		var writeSize int64
-
-		locResp, err := client.GetChunkLocations(chunkCtx, &pb.GetChunkLocationsRequest{Path: gfsPath})
-		if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
-			lastChunk := locResp.Chunks[len(locResp.Chunks)-1]
-			spaceAvailable := int64(maxChunkSize - lastChunk.Size)
-			if spaceAvailable > 0 {
-				chunk = lastChunk
-				writeSize = min(totalSize-totalWritten, spaceAvailable)
-			}
-		}
-
-		// Allocate new chunk if needed
-		if chunk == nil {
-			allocResp, err := client.AllocateChunk(chunkCtx, &pb.AllocateChunkRequest{Path: gfsPath})
-			if err != nil {
-				cancel()
-				return totalWritten, fmt.Errorf("failed to allocate chunk: %w", err)
-			}
-			if !allocResp.Success {
-				cancel()
-				return totalWritten, fmt.Errorf("chunk allocation failed: %s", allocResp.Message)
-			}
-			chunk = allocResp.Chunk
-			writeSize = min(totalSize-totalWritten, maxChunkSize)
-		}
-		cancel() // Done with gRPC calls for this chunk
-
-		// Read data from file into buffer
-		n, err := io.ReadFull(file, buf[:writeSize])
-		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
-			return totalWritten, fmt.Errorf("failed to read from file: %w", err)
-		}
-		if n == 0 {
-			break
-		}
-
-		// Convert to internal types
-		primary := csstructs.ReplicaIdentifier{
-			ID:              chunk.Primary.ServerId,
-			Hostname:        chunk.Primary.Hostname,
-			DataPort:        int(chunk.Primary.DataPort),
-			ReplicationPort: int(chunk.Primary.ReplicationPort),
-		}
-
-		var replicas []csstructs.ReplicaIdentifier
-		for _, loc := range chunk.Locations {
-			if loc.ServerId != chunk.Primary.ServerId {
-				replicas = append(replicas, csstructs.ReplicaIdentifier{
-					ID:              loc.ServerId,
-					Hostname:        loc.Hostname,
-					DataPort:        int(loc.DataPort),
-					ReplicationPort: int(loc.ReplicationPort),
-				})
-			}
-		}
-
-		if err := performWrite(primary, replicas, chunk.ChunkHandle, buf[:n], -1); err != nil {
-			return totalWritten, err
-		}
-
-		totalWritten += int64(n)
-
-		// Update progress bar or print status
-		if progress != nil {
-			progress.Update(totalWritten)
-		}
-	}
-
-	return totalWritten, nil
-}
-
-// writeData_inline writes small inline data (for string arguments)
-func writeData_inline(_ context.Context, gfsPath string, data []byte) (int, error) {
-	totalWritten := 0
-	remaining := data
-
-	// Per-chunk timeout - resets on each successful chunk write
-	const chunkTimeout = 60 * time.Second
-
-	for len(remaining) > 0 {
-		// Create fresh context for each chunk operation
-		chunkCtx, cancel := context.WithTimeout(context.Background(), chunkTimeout)
-
-		var chunkData []byte
-		var chunk *pb.ChunkLocationInfo
-
-		// Check for existing chunks with space
-		locResp, err := client.GetChunkLocations(chunkCtx, &pb.GetChunkLocationsRequest{Path: gfsPath})
-		if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
-			lastChunk := locResp.Chunks[len(locResp.Chunks)-1]
-			spaceAvailable := maxChunkSize - lastChunk.Size
-			if spaceAvailable > 0 {
-				chunk = lastChunk
-				writeSize := uint64(len(remaining))
-				if writeSize > spaceAvailable {
-					writeSize = spaceAvailable
-				}
-				chunkData = remaining[:writeSize]
-				remaining = remaining[writeSize:]
-			}
-		}
-
-		// Allocate new chunk if needed
-		if chunk == nil {
-			allocResp, err := client.AllocateChunk(chunkCtx, &pb.AllocateChunkRequest{Path: gfsPath})
-			if err != nil {
-				cancel()
-				return totalWritten, fmt.Errorf("failed to allocate chunk: %w", err)
-			}
-			if !allocResp.Success {
-				cancel()
-				return totalWritten, fmt.Errorf("chunk allocation failed: %s", allocResp.Message)
-			}
-			chunk = allocResp.Chunk
-
-			writeSize := len(remaining)
-			if writeSize > maxChunkSize {
-				writeSize = maxChunkSize
-			}
-			chunkData = remaining[:writeSize]
-			remaining = remaining[writeSize:]
-		}
-		cancel() // Done with gRPC calls for this chunk
-
-		// Convert to internal types
-		primary := csstructs.ReplicaIdentifier{
-			ID:              chunk.Primary.ServerId,
-			Hostname:        chunk.Primary.Hostname,
-			DataPort:        int(chunk.Primary.DataPort),
-			ReplicationPort: int(chunk.Primary.ReplicationPort),
-		}
-
-		var replicas []csstructs.ReplicaIdentifier
-		for _, loc := range chunk.Locations {
-			if loc.ServerId != chunk.Primary.ServerId {
-				replicas = append(replicas, csstructs.ReplicaIdentifier{
-					ID:              loc.ServerId,
-					Hostname:        loc.Hostname,
-					DataPort:        int(loc.DataPort),
-					ReplicationPort: int(loc.ReplicationPort),
-				})
-			}
-		}
-
-		if err := performWrite(primary, replicas, chunk.ChunkHandle, chunkData, -1); err != nil {
-			return totalWritten, err
-		}
-
-		totalWritten += len(chunkData)
-		if len(remaining) > 0 {
-			fmt.Printf("  Wrote chunk %s (%d bytes), %d bytes remaining...\n", chunk.ChunkHandle, len(chunkData), len(remaining))
-		}
-	}
-
-	return totalWritten, nil
+	// Use prepared upload to stream the file (no allocation delays)
+	return prepared.AppendFrom(ctx, reader)
 }
 
 // ============ rm command ============
@@ -895,13 +547,8 @@ func cmdRm(args []string) {
 	ctx, cancel := getContext()
 	defer cancel()
 
-	resp, err := client.DeleteFile(ctx, &pb.DeleteFileRequest{Path: path})
-	if err != nil {
+	if err := client.DeleteFile(ctx, path); err != nil {
 		fmt.Printf("Error: %v\n", err)
-		return
-	}
-	if !resp.Success {
-		fmt.Printf("Error: %s\n", resp.Message)
 		return
 	}
 
@@ -921,13 +568,8 @@ func cmdMv(args []string) {
 	ctx, cancel := getContext()
 	defer cancel()
 
-	resp, err := client.RenameFile(ctx, &pb.RenameFileRequest{OldPath: oldPath, NewPath: newPath})
-	if err != nil {
+	if err := client.RenameFile(ctx, oldPath, newPath); err != nil {
 		fmt.Printf("Error: %v\n", err)
-		return
-	}
-	if !resp.Success {
-		fmt.Printf("Error: %s\n", resp.Message)
 		return
 	}
 
@@ -947,27 +589,22 @@ func cmdInfo(args []string) {
 	defer cancel()
 
 	// Get file info
-	fileResp, err := client.GetFile(ctx, &pb.GetFileRequest{Path: path})
+	f, err := client.GetFile(ctx, path)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	if !fileResp.Success {
-		fmt.Printf("Error: %s\n", fileResp.Message)
-		return
-	}
 
-	f := fileResp.File
 	fmt.Printf("Path:       %s\n", f.Path)
 	fmt.Printf("Size:       %d bytes\n", f.Size)
 	fmt.Printf("Chunk Size: %d bytes\n", f.ChunkSize)
 	fmt.Printf("Chunks:     %d\n", len(f.ChunkHandles))
 
 	// Get chunk locations
-	locResp, err := client.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: path})
-	if err == nil && locResp.Success && len(locResp.Chunks) > 0 {
+	chunks, err := client.GetChunkLocations(ctx, path)
+	if err == nil && len(chunks) > 0 {
 		fmt.Println("\nChunk Details:")
-		for i, chunk := range locResp.Chunks {
+		for i, chunk := range chunks {
 			fmt.Printf("  [%d] %s (%d bytes)\n", i, chunk.ChunkHandle, chunk.Size)
 			if chunk.Primary != nil {
 				fmt.Printf("      Primary: %s:%d\n", chunk.Primary.Hostname, chunk.Primary.DataPort)
@@ -987,7 +624,7 @@ func cmdPressure(args []string) {
 	ctx, cancel := getContext()
 	defer cancel()
 
-	resp, err := client.GetClusterPressure(ctx, &pb.GetClusterPressureRequest{})
+	resp, err := client.GetClusterPressure(ctx)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
@@ -1072,160 +709,4 @@ func progressBar(percent float64, width int) string {
 		}
 	}
 	return string(bar)
-}
-
-// ============ Data operations ============
-
-func performWrite(primary csstructs.ReplicaIdentifier, replicas []csstructs.ReplicaIdentifier, chunkHandle string, data []byte, offset int64) error {
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", primary.Hostname, primary.DataPort))
-	if err != nil {
-		return fmt.Errorf("failed to connect: %w", err)
-	}
-	defer conn.Close()
-
-	// Send action type (Download = write to chunkserver)
-	actionBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(actionBytes, uint32(csstructs.Download))
-	if _, err = conn.Write(actionBytes); err != nil {
-		return fmt.Errorf("failed to send action: %w", err)
-	}
-
-	// Create JWT with write metadata
-	claims := csstructs.DownloadRequestClaims{
-		ChunkHandle: chunkHandle,
-		Operation:   "download",
-		Filesize:    uint64(len(data)),
-		Offset:      offset,
-		Replicas:    replicas,
-		Primary:     primary,
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	secret, err := secrets.GetSecret(nil)
-	if err != nil {
-		return fmt.Errorf("failed to get secret: %w", err)
-	}
-
-	tokenString, err := token.SignedString(secret)
-	if err != nil {
-		return fmt.Errorf("failed to sign token: %w", err)
-	}
-
-	// Send JWT token
-	tokenLen := int32(len(tokenString))
-	if err = binary.Write(conn, binary.BigEndian, tokenLen); err != nil {
-		return fmt.Errorf("failed to send token length: %w", err)
-	}
-
-	if _, err = conn.Write([]byte(tokenString)); err != nil {
-		return fmt.Errorf("failed to send token: %w", err)
-	}
-
-	// Wait for offset allocation
-	offsetBytes := make([]byte, 8)
-	if _, err = conn.Read(offsetBytes); err != nil {
-		return fmt.Errorf("failed to receive offset: %w", err)
-	}
-
-	// Send data payload
-	if _, err = conn.Write(data); err != nil {
-		return fmt.Errorf("failed to send data: %w", err)
-	}
-
-	// Close write side to signal EOF
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.CloseWrite()
-	}
-
-	// Wait for final commit response
-	resultBytes := make([]byte, 1)
-	if _, err = conn.Read(resultBytes); err != nil {
-		return fmt.Errorf("failed to receive commit response: %w", err)
-	}
-
-	if resultBytes[0] == 1 {
-		return nil
-	}
-
-	return fmt.Errorf("data persistence failed")
-}
-
-// performReadStream streams chunk data directly to the provided writer.
-// Returns the number of bytes written and any error encountered.
-func performReadStream(server csstructs.ReplicaIdentifier, chunkHandle string, w io.Writer) (int64, error) {
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", server.Hostname, server.DataPort))
-	if err != nil {
-		return 0, fmt.Errorf("failed to connect: %w", err)
-	}
-	defer conn.Close()
-
-	// Send Upload action (read from chunkserver)
-	actionBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(actionBytes, uint32(csstructs.Upload))
-	if _, err = conn.Write(actionBytes); err != nil {
-		return 0, fmt.Errorf("failed to send action: %w", err)
-	}
-
-	// Create read JWT
-	claims := csstructs.UploadRequestClaims{
-		ChunkHandle: chunkHandle,
-		Operation:   "upload",
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	secret, err := secrets.GetSecret(nil)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get secret: %w", err)
-	}
-
-	tokenString, err := token.SignedString(secret)
-	if err != nil {
-		return 0, fmt.Errorf("failed to sign token: %w", err)
-	}
-
-	// Send JWT
-	tokenLen := int32(len(tokenString))
-	if err = binary.Write(conn, binary.BigEndian, tokenLen); err != nil {
-		return 0, fmt.Errorf("failed to send token length: %w", err)
-	}
-	if _, err = conn.Write([]byte(tokenString)); err != nil {
-		return 0, fmt.Errorf("failed to send token: %w", err)
-	}
-
-	// Read response status
-	statusBytes := make([]byte, 1)
-	if _, err = conn.Read(statusBytes); err != nil {
-		return 0, fmt.Errorf("failed to read status: %w", err)
-	}
-
-	if statusBytes[0] == 0 {
-		// Read error details
-		codeBytes := make([]byte, 4)
-		conn.Read(codeBytes)
-		errorCode := binary.BigEndian.Uint32(codeBytes)
-
-		lenBytes := make([]byte, 4)
-		conn.Read(lenBytes)
-		msgLen := binary.BigEndian.Uint32(lenBytes)
-
-		msgBytes := make([]byte, msgLen)
-		conn.Read(msgBytes)
-
-		return 0, fmt.Errorf("read failed: code=%d, message=%s", errorCode, string(msgBytes))
-	}
-
-	// Read file size
-	sizeBytes := make([]byte, 8)
-	if _, err = conn.Read(sizeBytes); err != nil {
-		return 0, fmt.Errorf("failed to read file size: %w", err)
-	}
-	fileSize := binary.BigEndian.Uint64(sizeBytes)
-
-	// Stream data directly to writer using io.CopyN with a limited reader
-	written, err := io.CopyN(w, conn, int64(fileSize))
-	if err != nil && err != io.EOF {
-		return written, fmt.Errorf("failed to stream data: %w", err)
-	}
-
-	return written, nil
 }
