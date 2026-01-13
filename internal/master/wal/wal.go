@@ -15,12 +15,13 @@ import (
 type OpType string
 
 const (
-	OpCreateFile   OpType = "CREATE_FILE"
-	OpDeleteFile   OpType = "DELETE_FILE"
-	OpRenameFile   OpType = "RENAME_FILE"
-	OpAddChunk     OpType = "ADD_CHUNK"
-	OpCommitChunk  OpType = "COMMIT_CHUNK"
-	OpSetCounter   OpType = "SET_COUNTER"
+	OpCreateFile      OpType = "CREATE_FILE"
+	OpDeleteFile      OpType = "DELETE_FILE"
+	OpDeleteNamespace OpType = "DELETE_NAMESPACE"
+	OpRenameFile      OpType = "RENAME_FILE"
+	OpAddChunk        OpType = "ADD_CHUNK"
+	OpCommitChunk     OpType = "COMMIT_CHUNK"
+	OpSetCounter      OpType = "SET_COUNTER"
 )
 
 // Entry represents a single WAL entry
@@ -40,6 +41,11 @@ type CreateFileData struct {
 type DeleteFileData struct {
 	Path      string `json:"path"`
 	Namespace string `json:"namespace,omitempty"`
+}
+
+// DeleteNamespaceData represents data for DELETE_NAMESPACE operation
+type DeleteNamespaceData struct {
+	Namespace string `json:"namespace"`
 }
 
 // RenameFileData represents data for RENAME_FILE operation
@@ -133,6 +139,12 @@ func (w *WAL) LogCreateFile(path, namespace string, chunkSize uint64) error {
 func (w *WAL) LogDeleteFile(path, namespace string) error {
 	data, _ := json.Marshal(DeleteFileData{Path: path, Namespace: namespace})
 	return w.append(Entry{Op: OpDeleteFile, Data: data})
+}
+
+// LogDeleteNamespace logs a DELETE_NAMESPACE operation
+func (w *WAL) LogDeleteNamespace(namespace string) error {
+	data, _ := json.Marshal(DeleteNamespaceData{Namespace: namespace})
+	return w.append(Entry{Op: OpDeleteNamespace, Data: data})
 }
 
 // LogRenameFile logs a RENAME_FILE operation

@@ -194,6 +194,14 @@ func (m *Master) replayWAL(walPath string) error {
 			}
 			m.replayDeleteFile(data.Path, data.Namespace)
 
+		case wal.OpDeleteNamespace:
+			var data wal.DeleteNamespaceData
+			if err := json.Unmarshal(entry.Data, &data); err != nil {
+				slog.Warn("failed to unmarshal DELETE_NAMESPACE", "error", err)
+				continue
+			}
+			m.replayDeleteNamespace(data.Namespace)
+
 		case wal.OpRenameFile:
 			var data wal.RenameFileData
 			if err := json.Unmarshal(entry.Data, &data); err != nil {
@@ -250,6 +258,19 @@ func (m *Master) replayDeleteFile(path, namespace string) {
 			delete(m.chunks, handle)
 		}
 		delete(m.files, key)
+	}
+}
+
+// replayDeleteNamespace deletes all files in a namespace from WAL (no WAL logging)
+func (m *Master) replayDeleteNamespace(namespace string) {
+	namespace = normalizeNamespace(namespace)
+	for key, file := range m.files {
+		if file.Namespace == namespace {
+			for _, handle := range file.Chunks {
+				delete(m.chunks, handle)
+			}
+			delete(m.files, key)
+		}
 	}
 }
 
@@ -554,6 +575,60 @@ func (m *Master) DeleteFile(path, namespace string) error {
 
 	slog.Info("deleted file", "path", path, "namespace", normalizeNamespace(namespace), "chunks", len(chunkHandles))
 	return nil
+}
+
+// DeleteNamespace removes a namespace and all its files
+func (m *Master) DeleteNamespace(namespace string) (int, error) {
+	namespace = normalizeNamespace(namespace)
+	if namespace == defaultNamespace {
+		return 0, fmt.Errorf("cannot delete default namespace")
+	}
+
+	m.fileMu.Lock()
+
+	// Find all files in this namespace
+	var filesToDelete []fileKey
+	var allChunkHandles []ChunkHandle
+	for key, file := range m.files {
+		if file.Namespace == namespace {
+			filesToDelete = append(filesToDelete, key)
+			allChunkHandles = append(allChunkHandles, file.Chunks...)
+		}
+	}
+
+	if len(filesToDelete) == 0 {
+		m.fileMu.Unlock()
+		return 0, nil
+	}
+
+	// Log to WAL
+	if err := m.wal.LogDeleteNamespace(namespace); err != nil {
+		m.fileMu.Unlock()
+		return 0, fmt.Errorf("WAL write failed: %w", err)
+	}
+
+	// Delete all files
+	for _, key := range filesToDelete {
+		delete(m.files, key)
+	}
+	m.fileMu.Unlock()
+
+	// Schedule chunk deletions
+	m.chunkMu.Lock()
+	m.pendingDeletesMu.Lock()
+	for _, handle := range allChunkHandles {
+		if chunk, ok := m.chunks[handle]; ok {
+			for _, loc := range chunk.Locations {
+				m.pendingDeletes[loc.ServerID] = append(m.pendingDeletes[loc.ServerID], handle)
+			}
+			delete(m.chunks, handle)
+		}
+	}
+	m.pendingDeletesMu.Unlock()
+	m.chunkMu.Unlock()
+
+	slog.Info("deleted namespace", "namespace", namespace, "files", len(filesToDelete), "chunks", len(allChunkHandles))
+	return len(filesToDelete), nil
 }
 
 // RenameFile renames/moves a file from oldPath to newPath

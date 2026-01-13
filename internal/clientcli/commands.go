@@ -216,6 +216,24 @@ func (a *App) cmdRm(args []string) error {
 	return nil
 }
 
+func (a *App) cmdRmns(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: rmns <namespace>")
+	}
+	namespace := args[0]
+
+	ctx, cancel := getContext()
+	defer cancel()
+
+	count, err := a.client.DeleteNamespace(ctx, namespace)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Deleted namespace '%s' (%d files)\n", namespace, count)
+	return nil
+}
+
 func (a *App) cmdMv(args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage: mv [--namespace <name>] <source> <destination>")

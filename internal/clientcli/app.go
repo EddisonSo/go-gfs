@@ -40,6 +40,7 @@ func Run(args []string) error {
 		readline.PcItem("read", readline.PcItemDynamic(app.completeGFSPath)),
 		readline.PcItem("write", readline.PcItemDynamic(app.completeGFSPath)),
 		readline.PcItem("rm", readline.PcItemDynamic(app.completeGFSPath)),
+		readline.PcItem("rmns"),
 		readline.PcItem("mv", readline.PcItemDynamic(app.completeGFSPath)),
 		readline.PcItem("rename", readline.PcItemDynamic(app.completeGFSPath)),
 		readline.PcItem("info", readline.PcItemDynamic(app.completeGFSPath)),
@@ -154,6 +155,8 @@ func (a *App) dispatch(cmd string, args []string) error {
 		return a.cmdMv(args)
 	case "rm":
 		return a.cmdRm(args)
+	case "rmns":
+		return a.cmdRmns(args)
 	case "info":
 		return a.cmdInfo(args)
 	case "pressure":

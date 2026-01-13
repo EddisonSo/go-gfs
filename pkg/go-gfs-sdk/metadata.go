@@ -77,6 +77,20 @@ func (c *Client) DeleteFileWithNamespace(ctx context.Context, path, namespace st
 	return nil
 }
 
+// DeleteNamespace removes a namespace and all its files.
+func (c *Client) DeleteNamespace(ctx context.Context, namespace string) (int, error) {
+	resp, err := c.master.DeleteNamespace(ctx, &pb.DeleteNamespaceRequest{
+		Namespace: namespace,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if !resp.Success {
+		return 0, fmt.Errorf("delete namespace failed: %s", resp.Message)
+	}
+	return int(resp.FilesDeleted), nil
+}
+
 // RenameFile renames a file.
 func (c *Client) RenameFile(ctx context.Context, oldPath, newPath string) error {
 	return c.RenameFileWithNamespace(ctx, oldPath, newPath, "")

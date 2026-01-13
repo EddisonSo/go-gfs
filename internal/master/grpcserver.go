@@ -159,6 +159,23 @@ func (s *GRPCServer) DeleteFile(ctx context.Context, req *pb.DeleteFileRequest) 
 	}, nil
 }
 
+// DeleteNamespace removes a namespace and all its files
+func (s *GRPCServer) DeleteNamespace(ctx context.Context, req *pb.DeleteNamespaceRequest) (*pb.DeleteNamespaceResponse, error) {
+	count, err := s.master.DeleteNamespace(req.Namespace)
+	if err != nil {
+		return &pb.DeleteNamespaceResponse{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
+
+	return &pb.DeleteNamespaceResponse{
+		Success:      true,
+		Message:      "namespace deleted",
+		FilesDeleted: int32(count),
+	}, nil
+}
+
 // RenameFile renames/moves a file
 func (s *GRPCServer) RenameFile(ctx context.Context, req *pb.RenameFileRequest) (*pb.RenameFileResponse, error) {
 	err := s.master.RenameFile(req.OldPath, req.NewPath, req.Namespace)

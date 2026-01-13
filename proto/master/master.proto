@@ -131,6 +131,16 @@ message DeleteFileResponse {
     string message = 2;
 }
 
+message DeleteNamespaceRequest {
+    string namespace = 1;
+}
+
+message DeleteNamespaceResponse {
+    bool success = 1;
+    string message = 2;
+    int32 files_deleted = 3;
+}
+
 message RenameFileRequest {
     string old_path = 1;
     string new_path = 2;
@@ -204,6 +214,7 @@ service Master {
     rpc CreateFile(CreateFileRequest) returns (CreateFileResponse);
     rpc GetFile(GetFileRequest) returns (GetFileResponse);
     rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+    rpc DeleteNamespace(DeleteNamespaceRequest) returns (DeleteNamespaceResponse);
     rpc RenameFile(RenameFileRequest) returns (RenameFileResponse);
     rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
 
