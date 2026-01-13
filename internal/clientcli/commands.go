@@ -88,7 +88,7 @@ func (a *App) cmdRead(args []string) error {
 	}
 
 	var progress *TransferProgress
-	if outputFile != "" && totalSize > 0 {
+	if totalSize > 0 {
 		progress = NewTransferProgress(totalSize, "Downloading")
 		progress.Start()
 		defer progress.Finish()

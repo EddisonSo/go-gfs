@@ -27,9 +27,9 @@ type TransferProgress struct {
 // NewTransferProgress creates a new progress tracker.
 func NewTransferProgress(total int64, operation string) *TransferProgress {
 	width := 40
-	isTerminal := term.IsTerminal(int(os.Stdout.Fd()))
+	isTerminal := term.IsTerminal(int(os.Stderr.Fd()))
 	if isTerminal {
-		if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+		if w, _, err := term.GetSize(int(os.Stderr.Fd())); err == nil && w > 0 {
 			width = w
 		}
 	}
@@ -139,12 +139,12 @@ func (p *TransferProgress) render(final bool) {
 	}
 
 	if p.isTerminal {
-		fmt.Print(line)
+		fmt.Fprint(os.Stderr, line)
 		if final {
-			fmt.Println()
+			fmt.Fprintln(os.Stderr)
 		}
 	} else if final {
-		fmt.Printf("%s: %s (%s)\n", p.operation, totalStr, speedStr)
+		fmt.Fprintf(os.Stderr, "%s: %s (%s)\n", p.operation, totalStr, speedStr)
 	}
 }
 
