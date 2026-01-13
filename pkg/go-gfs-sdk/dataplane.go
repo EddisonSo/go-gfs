@@ -94,29 +94,46 @@ func (c *Client) ReadToWithNamespace(ctx context.Context, path, namespace string
 		close(results)
 	}()
 
-	// Collect results
-	chunkData := make([][]byte, len(chunks))
+	// Stream results in order as they become available
+	pending := make(map[int][]byte, len(chunks))
+	nextIndex := 0
+	var total int64
 	var readErr error
+
 	for result := range results {
 		if result.err != nil {
 			readErr = result.err
 			continue
 		}
-		chunkData[result.index] = result.data
+
+		if result.index == nextIndex {
+			n, err := w.Write(result.data)
+			if err != nil {
+				return total, err
+			}
+			total += int64(n)
+			nextIndex++
+
+			for {
+				data, ok := pending[nextIndex]
+				if !ok {
+					break
+				}
+				delete(pending, nextIndex)
+				n, err := w.Write(data)
+				if err != nil {
+					return total, err
+				}
+				total += int64(n)
+				nextIndex++
+			}
+		} else {
+			pending[result.index] = result.data
+		}
 	}
 
 	if readErr != nil {
-		return 0, readErr
-	}
-
-	// Write chunks in order
-	var total int64
-	for _, data := range chunkData {
-		n, err := w.Write(data)
-		if err != nil {
-			return total, err
-		}
-		total += int64(n)
+		return total, readErr
 	}
 
 	return total, nil
