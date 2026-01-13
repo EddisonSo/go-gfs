@@ -11,26 +11,29 @@ import (
 
 const defaultChunkTimeout = 60 * time.Second
 const defaultMaxChunkSize = int64(64 << 20)
+const defaultReadConcurrency = 3
 
 // Option configures the SDK client.
 type Option func(*clientConfig)
 
 type clientConfig struct {
-	dialOptions    []grpc.DialOption
-	chunkTimeout   time.Duration
-	maxChunkSize   int64
-	secretProvider SecretProvider
-	replicaPicker  ReplicaPicker
+	dialOptions     []grpc.DialOption
+	chunkTimeout    time.Duration
+	maxChunkSize    int64
+	readConcurrency int
+	secretProvider  SecretProvider
+	replicaPicker   ReplicaPicker
 }
 
 // New creates a new SDK client connected to the master gRPC endpoint.
 func New(ctx context.Context, masterAddr string, opts ...Option) (*Client, error) {
 	cfg := clientConfig{
-		dialOptions:    []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
-		chunkTimeout:   defaultChunkTimeout,
-		maxChunkSize:   defaultMaxChunkSize,
-		secretProvider: DefaultSecretProvider,
-		replicaPicker:  DefaultReplicaPicker,
+		dialOptions:     []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())},
+		chunkTimeout:    defaultChunkTimeout,
+		maxChunkSize:    defaultMaxChunkSize,
+		readConcurrency: defaultReadConcurrency,
+		secretProvider:  DefaultSecretProvider,
+		replicaPicker:   DefaultReplicaPicker,
 	}
 
 	for _, opt := range opts {
@@ -43,25 +46,27 @@ func New(ctx context.Context, masterAddr string, opts ...Option) (*Client, error
 	}
 
 	return &Client{
-		masterAddr:     masterAddr,
-		conn:           conn,
-		master:         pb.NewMasterClient(conn),
-		chunkTimeout:   cfg.chunkTimeout,
-		maxChunkSize:   cfg.maxChunkSize,
-		secretProvider: cfg.secretProvider,
-		replicaPicker:  cfg.replicaPicker,
+		masterAddr:      masterAddr,
+		conn:            conn,
+		master:          pb.NewMasterClient(conn),
+		chunkTimeout:    cfg.chunkTimeout,
+		maxChunkSize:    cfg.maxChunkSize,
+		readConcurrency: cfg.readConcurrency,
+		secretProvider:  cfg.secretProvider,
+		replicaPicker:   cfg.replicaPicker,
 	}, nil
 }
 
 // Client is the SDK entry point for interacting with Go-GFS.
 type Client struct {
-	masterAddr     string
-	conn           *grpc.ClientConn
-	master         pb.MasterClient
-	chunkTimeout   time.Duration
-	maxChunkSize   int64
-	secretProvider SecretProvider
-	replicaPicker  ReplicaPicker
+	masterAddr      string
+	conn            *grpc.ClientConn
+	master          pb.MasterClient
+	chunkTimeout    time.Duration
+	maxChunkSize    int64
+	readConcurrency int
+	secretProvider  SecretProvider
+	replicaPicker   ReplicaPicker
 }
 
 // Close releases the underlying gRPC connection.
@@ -107,6 +112,15 @@ func WithReplicaPicker(picker ReplicaPicker) Option {
 	return func(cfg *clientConfig) {
 		if picker != nil {
 			cfg.replicaPicker = picker
+		}
+	}
+}
+
+// WithReadConcurrency sets the maximum number of concurrent chunk reads.
+func WithReadConcurrency(n int) Option {
+	return func(cfg *clientConfig) {
+		if n > 0 {
+			cfg.readConcurrency = n
 		}
 	}
 }

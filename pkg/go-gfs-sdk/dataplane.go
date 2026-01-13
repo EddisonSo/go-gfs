@@ -41,8 +41,14 @@ func (c *Client) ReadTo(ctx context.Context, path string, w io.Writer) (int64, e
 	return c.ReadToWithNamespace(ctx, path, "", w)
 }
 
+// chunkWithIndex pairs a chunk with its original index for ordered output.
+type chunkWithIndex struct {
+	index int
+	chunk *pb.ChunkLocationInfo
+}
+
 // ReadToWithNamespace streams file contents to the provided writer with a namespace.
-// Chunks are read in parallel for better performance.
+// Chunks are grouped by chunkserver and read in batches to reduce connection overhead.
 func (c *Client) ReadToWithNamespace(ctx context.Context, path, namespace string, w io.Writer) (int64, error) {
 	chunks, err := c.GetChunkLocationsWithNamespace(ctx, path, namespace)
 	if err != nil {
@@ -52,40 +58,65 @@ func (c *Client) ReadToWithNamespace(ctx context.Context, path, namespace string
 		return 0, ErrNoChunkLocations
 	}
 
-	// Read all chunks in parallel
-	results := make(chan chunkReadResult, len(chunks))
-	var wg sync.WaitGroup
+	// Group chunks by target chunkserver to batch reads
+	serverChunks := make(map[string][]chunkWithIndex)
+	serverReplicas := make(map[string]csstructs.ReplicaIdentifier)
 
 	for i, chunk := range chunks {
-		wg.Add(1)
-		go func(index int, chunk *pb.ChunkLocationInfo) {
-			defer wg.Done()
-
-			server := c.replicaPicker(chunk)
-			if server == nil {
-				results <- chunkReadResult{index: index, err: ErrNoReplica}
-				return
-			}
-
-			replica := csstructs.ReplicaIdentifier{
+		server := c.replicaPicker(chunk)
+		if server == nil {
+			continue
+		}
+		key := fmt.Sprintf("%s:%d", server.Hostname, server.DataPort)
+		serverChunks[key] = append(serverChunks[key], chunkWithIndex{index: i, chunk: chunk})
+		if _, exists := serverReplicas[key]; !exists {
+			serverReplicas[key] = csstructs.ReplicaIdentifier{
 				ID:              server.ServerId,
 				Hostname:        server.Hostname,
 				DataPort:        int(server.DataPort),
 				ReplicationPort: int(server.ReplicationPort),
 			}
+		}
+	}
 
-			var buf bytes.Buffer
-			chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
-			_, err := c.readChunk(chunkCtx, replica, chunk.ChunkHandle, &buf)
-			cancel()
+	// Process server batches with bounded concurrency
+	sem := make(chan struct{}, c.readConcurrency)
+	results := make(chan chunkReadResult, len(chunks))
+	var wg sync.WaitGroup
 
-			if err != nil {
-				results <- chunkReadResult{index: index, err: fmt.Errorf("chunk %s: %w", chunk.ChunkHandle, err)}
+	for serverKey, chunksForServer := range serverChunks {
+		wg.Add(1)
+		go func(serverKey string, chunksForServer []chunkWithIndex) {
+			defer wg.Done()
+
+			// Acquire semaphore slot for this server batch
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				for _, cwi := range chunksForServer {
+					results <- chunkReadResult{index: cwi.index, err: ctx.Err()}
+				}
 				return
 			}
 
-			results <- chunkReadResult{index: index, data: buf.Bytes()}
-		}(i, chunk)
+			replica := serverReplicas[serverKey]
+
+			// Read all chunks from this server sequentially
+			for _, cwi := range chunksForServer {
+				var buf bytes.Buffer
+				chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
+				_, err := c.readChunk(chunkCtx, replica, cwi.chunk.ChunkHandle, &buf)
+				cancel()
+
+				if err != nil {
+					results <- chunkReadResult{index: cwi.index, err: fmt.Errorf("chunk %s: %w", cwi.chunk.ChunkHandle, err)}
+					continue
+				}
+
+				results <- chunkReadResult{index: cwi.index, data: buf.Bytes()}
+			}
+		}(serverKey, chunksForServer)
 	}
 
 	// Close results channel when all goroutines complete
