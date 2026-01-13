@@ -37,17 +37,6 @@ message FileInfoResponse {
     int64 modified_at = 7;  // Unix timestamp (seconds)
 }
 
-// Resource metrics reported by chunkservers
-message ResourceMetrics {
-    double cpu_usage_percent = 1;     // CPU usage percentage (0-100)
-    uint64 memory_used_bytes = 2;     // Memory currently in use
-    uint64 memory_total_bytes = 3;    // Total system memory
-    double memory_usage_percent = 4;  // Memory usage percentage (0-100)
-    uint64 disk_used_bytes = 5;       // Disk space used
-    uint64 disk_total_bytes = 6;      // Total disk space
-    double disk_usage_percent = 7;    // Disk usage percentage (0-100)
-}
-
 // ============ Chunkserver -> Master RPCs ============
 
 message RegisterRequest {
@@ -67,7 +56,6 @@ message RegisterResponse {
 message HeartbeatRequest {
     string server_id = 1;
     repeated string chunk_handles = 2;  // Current chunks on this server
-    ResourceMetrics resources = 3;      // Current resource usage
 }
 
 message HeartbeatResponse {
@@ -187,21 +175,12 @@ message GetChunkLocationsResponse {
     repeated ChunkLocationInfo chunks = 3;
 }
 
-// Chunkserver status with resource metrics
+// Chunkserver status
 message ChunkServerStatus {
     ChunkServerInfo server = 1;
-    ResourceMetrics resources = 2;
-    int32 chunk_count = 3;           // Number of chunks on this server
-    bool is_alive = 4;               // Whether server is responding to heartbeats
-    BuildInfo build_info = 5;        // Build information
-}
-
-// Get cluster resource pressure
-message GetClusterPressureRequest {}
-
-message GetClusterPressureResponse {
-    repeated ChunkServerStatus servers = 1;
-    BuildInfo master_build_info = 2;  // Master's build information
+    int32 chunk_count = 2;           // Number of chunks on this server
+    bool is_alive = 3;               // Whether server is responding to heartbeats
+    BuildInfo build_info = 4;        // Build information
 }
 
 // Master service
@@ -223,7 +202,4 @@ service Master {
     // Chunk operations
     rpc AllocateChunk(AllocateChunkRequest) returns (AllocateChunkResponse);
     rpc GetChunkLocations(GetChunkLocationsRequest) returns (GetChunkLocationsResponse);
-
-    // Cluster monitoring
-    rpc GetClusterPressure(GetClusterPressureRequest) returns (GetClusterPressureResponse);
 }

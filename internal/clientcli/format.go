@@ -32,26 +32,6 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
-func progressBar(percent float64, width int) string {
-	filled := int(percent / 100 * float64(width))
-	if filled > width {
-		filled = width
-	}
-	if filled < 0 {
-		filled = 0
-	}
-
-	bar := make([]byte, width)
-	for i := 0; i < width; i++ {
-		if i < filled {
-			bar[i] = '#'
-		} else {
-			bar[i] = '-'
-		}
-	}
-	return string(bar)
-}
-
 func renderFileTable(w io.Writer, files []*pb.FileInfoResponse) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAMESPACE\tNAME\tCHUNKS\tSIZE")

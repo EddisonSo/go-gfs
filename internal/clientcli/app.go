@@ -13,7 +13,7 @@ import (
 	gfs "eddisonso.com/go-gfs/pkg/go-gfs-sdk"
 )
 
-var commands = []string{"ls", "cat", "read", "write", "rm", "mv", "rename", "info", "pressure", "help", "exit", "quit"}
+var commands = []string{"ls", "cat", "read", "write", "rm", "mv", "rename", "info", "help", "exit", "quit"}
 
 type App struct {
 	masterAddr string
@@ -43,7 +43,6 @@ func Run(args []string) error {
 		readline.PcItem("mv", readline.PcItemDynamic(app.completeGFSPath)),
 		readline.PcItem("rename", readline.PcItemDynamic(app.completeGFSPath)),
 		readline.PcItem("info", readline.PcItemDynamic(app.completeGFSPath)),
-		readline.PcItem("pressure"),
 		readline.PcItem("help"),
 		readline.PcItem("exit"),
 		readline.PcItem("quit"),
@@ -156,8 +155,6 @@ func (a *App) dispatch(cmd string, args []string) error {
 		return a.cmdRm(args)
 	case "info":
 		return a.cmdInfo(args)
-	case "pressure":
-		return a.cmdPressure(args)
 	case "help":
 		printHelp()
 		return nil

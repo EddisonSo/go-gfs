@@ -1,15 +1,11 @@
 package masterclient
 
 import (
-	"bufio"
 	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	pb "eddisonso.com/go-gfs/gen/master"
@@ -36,12 +32,6 @@ func GetInstance() *MasterClient {
 	return instance
 }
 
-// cpuStats holds CPU timing info for calculating usage
-type cpuStats struct {
-	idle  uint64
-	total uint64
-}
-
 // MasterClient handles communication with the master server
 type MasterClient struct {
 	serverID        string
@@ -57,10 +47,6 @@ type MasterClient struct {
 	// Heartbeat control
 	stopHeartbeat chan struct{}
 	wg            sync.WaitGroup
-
-	// CPU stats tracking for usage calculation
-	prevCPUStats *cpuStats
-	cpuStatsMu   sync.Mutex
 }
 
 // NewMasterClient creates a new master client
@@ -154,7 +140,6 @@ func (mc *MasterClient) StartHeartbeat(interval time.Duration) {
 // sendHeartbeat sends a single heartbeat to the master
 func (mc *MasterClient) sendHeartbeat() {
 	chunks := mc.scanChunks()
-	resources := mc.collectResourceMetrics()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -162,7 +147,6 @@ func (mc *MasterClient) sendHeartbeat() {
 	resp, err := mc.client.Heartbeat(ctx, &pb.HeartbeatRequest{
 		ServerId:     mc.serverID,
 		ChunkHandles: chunks,
-		Resources:    resources,
 	})
 
 	if err != nil {
@@ -186,10 +170,7 @@ func (mc *MasterClient) sendHeartbeat() {
 		}
 	}
 
-	slog.Debug("heartbeat sent", "chunks", len(chunks),
-		"cpu_percent", resources.CpuUsagePercent,
-		"mem_percent", resources.MemoryUsagePercent,
-		"disk_percent", resources.DiskUsagePercent)
+	slog.Debug("heartbeat sent", "chunks", len(chunks))
 }
 
 // tryReregister attempts to re-register with the master
@@ -231,147 +212,6 @@ func (mc *MasterClient) deleteChunk(chunkHandle string) {
 	} else {
 		slog.Info("deleted chunk", "chunk", chunkHandle)
 	}
-}
-
-// collectResourceMetrics gathers CPU, memory, and disk usage information
-func (mc *MasterClient) collectResourceMetrics() *pb.ResourceMetrics {
-	metrics := &pb.ResourceMetrics{}
-
-	// Collect CPU usage
-	metrics.CpuUsagePercent = mc.getCPUUsage()
-
-	// Collect memory usage
-	memUsed, memTotal, memPercent := mc.getMemoryUsage()
-	metrics.MemoryUsedBytes = memUsed
-	metrics.MemoryTotalBytes = memTotal
-	metrics.MemoryUsagePercent = memPercent
-
-	// Collect disk usage for storage directory
-	diskUsed, diskTotal, diskPercent := mc.getDiskUsage()
-	metrics.DiskUsedBytes = diskUsed
-	metrics.DiskTotalBytes = diskTotal
-	metrics.DiskUsagePercent = diskPercent
-
-	return metrics
-}
-
-// getCPUUsage calculates CPU usage percentage by comparing /proc/stat readings
-func (mc *MasterClient) getCPUUsage() float64 {
-	file, err := os.Open("/proc/stat")
-	if err != nil {
-		slog.Debug("failed to open /proc/stat", "error", err)
-		return 0
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "cpu ") {
-			fields := strings.Fields(line)
-			if len(fields) < 5 {
-				return 0
-			}
-
-			// Parse CPU times: user, nice, system, idle, iowait, irq, softirq, steal
-			var total, idle uint64
-			for i := 1; i < len(fields); i++ {
-				val, err := strconv.ParseUint(fields[i], 10, 64)
-				if err != nil {
-					continue
-				}
-				total += val
-				if i == 4 { // idle is the 4th value (index 4 after "cpu")
-					idle = val
-				}
-			}
-
-			mc.cpuStatsMu.Lock()
-			defer mc.cpuStatsMu.Unlock()
-
-			if mc.prevCPUStats == nil {
-				mc.prevCPUStats = &cpuStats{idle: idle, total: total}
-				return 0 // No previous reading to compare
-			}
-
-			// Calculate CPU usage since last check
-			idleDelta := idle - mc.prevCPUStats.idle
-			totalDelta := total - mc.prevCPUStats.total
-
-			mc.prevCPUStats.idle = idle
-			mc.prevCPUStats.total = total
-
-			if totalDelta == 0 {
-				return 0
-			}
-
-			usage := 100.0 * float64(totalDelta-idleDelta) / float64(totalDelta)
-			return usage
-		}
-	}
-
-	return 0
-}
-
-// getMemoryUsage returns memory used, total, and percentage from /proc/meminfo
-func (mc *MasterClient) getMemoryUsage() (used, total uint64, percent float64) {
-	file, err := os.Open("/proc/meminfo")
-	if err != nil {
-		slog.Debug("failed to open /proc/meminfo", "error", err)
-		return 0, 0, 0
-	}
-	defer file.Close()
-
-	var memTotal, memAvailable uint64
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-
-		val, err := strconv.ParseUint(fields[1], 10, 64)
-		if err != nil {
-			continue
-		}
-
-		switch fields[0] {
-		case "MemTotal:":
-			memTotal = val * 1024 // Convert from kB to bytes
-		case "MemAvailable:":
-			memAvailable = val * 1024
-		}
-	}
-
-	if memTotal == 0 {
-		return 0, 0, 0
-	}
-
-	memUsed := memTotal - memAvailable
-	memPercent := 100.0 * float64(memUsed) / float64(memTotal)
-
-	return memUsed, memTotal, memPercent
-}
-
-// getDiskUsage returns disk used, total, and percentage for the storage directory
-func (mc *MasterClient) getDiskUsage() (used, total uint64, percent float64) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(mc.storageDir, &stat); err != nil {
-		slog.Debug("failed to get disk stats", "dir", mc.storageDir, "error", err)
-		return 0, 0, 0
-	}
-
-	total = stat.Blocks * uint64(stat.Bsize)
-	free := stat.Bfree * uint64(stat.Bsize)
-	used = total - free
-
-	if total == 0 {
-		return 0, 0, 0
-	}
-
-	percent = 100.0 * float64(used) / float64(total)
-	return used, total, percent
 }
 
 // ReportCommit notifies the master that a chunk was successfully committed

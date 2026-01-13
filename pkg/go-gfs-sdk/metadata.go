@@ -172,11 +172,6 @@ func (c *Client) GetChunkLocationsWithNamespace(ctx context.Context, path, names
 	return resp.Chunks, nil
 }
 
-// GetClusterPressure retrieves cluster resource information.
-func (c *Client) GetClusterPressure(ctx context.Context) (*pb.GetClusterPressureResponse, error) {
-	return c.master.GetClusterPressure(ctx, &pb.GetClusterPressureRequest{})
-}
-
 // ProgressFunc is called after each chunk write with bytes written so far.
 type ProgressFunc func(bytesWritten int64)
 

@@ -17,17 +17,6 @@ type ChunkHandle string
 // ChunkServerID is a unique identifier for a chunkserver
 type ChunkServerID string
 
-// ResourceMetrics holds CPU, memory, and disk usage information from a chunkserver
-type ResourceMetrics struct {
-	CPUUsagePercent    float64
-	MemoryUsedBytes    uint64
-	MemoryTotalBytes   uint64
-	MemoryUsagePercent float64
-	DiskUsedBytes      uint64
-	DiskTotalBytes     uint64
-	DiskUsagePercent   float64
-}
-
 // ChunkLocation represents where a chunk replica is stored
 type ChunkLocation struct {
 	ServerID        ChunkServerID
@@ -35,8 +24,7 @@ type ChunkLocation struct {
 	DataPort        int
 	ReplicationPort int
 	LastHeartbeat   time.Time
-	Resources       *ResourceMetrics // Current resource usage
-	BuildInfo       *BuildInfo       // Build version info
+	BuildInfo       *BuildInfo // Build version info
 }
 
 // BuildInfo contains build version information
@@ -359,14 +347,13 @@ func (m *Master) RegisterChunkServer(id ChunkServerID, hostname string, dataPort
 	slog.Info("registered chunkserver", "id", id, "hostname", hostname, "dataPort", dataPort, "build", buildID)
 }
 
-// Heartbeat updates the last heartbeat time and resource metrics for a chunkserver
-func (m *Master) Heartbeat(id ChunkServerID, resources *ResourceMetrics) bool {
+// Heartbeat updates the last heartbeat time for a chunkserver
+func (m *Master) Heartbeat(id ChunkServerID) bool {
 	m.csMu.Lock()
 	defer m.csMu.Unlock()
 
 	if loc, ok := m.chunkservers[id]; ok {
 		loc.LastHeartbeat = time.Now()
-		loc.Resources = resources
 		return true
 	}
 	return false
@@ -392,17 +379,6 @@ func (m *Master) GetChunkServers() []*ChunkLocation {
 		servers = append(servers, loc)
 	}
 	return servers
-}
-
-// GetChunkServerResources returns the resource metrics for a specific chunkserver
-func (m *Master) GetChunkServerResources(id ChunkServerID) *ResourceMetrics {
-	m.csMu.RLock()
-	defer m.csMu.RUnlock()
-
-	if loc, ok := m.chunkservers[id]; ok {
-		return loc.Resources
-	}
-	return nil
 }
 
 // ChunkServerStatus contains full status information for a chunkserver
@@ -442,46 +418,6 @@ func (m *Master) GetClusterStatus() []ChunkServerStatus {
 	}
 
 	return statuses
-}
-
-// GetLeastLoadedServers returns chunkservers sorted by combined resource pressure
-// Lower scores indicate less resource pressure (better candidates for placement)
-func (m *Master) GetLeastLoadedServers(n int) []*ChunkLocation {
-	m.csMu.RLock()
-	defer m.csMu.RUnlock()
-
-	type serverScore struct {
-		loc   *ChunkLocation
-		score float64
-	}
-
-	scores := make([]serverScore, 0, len(m.chunkservers))
-	for _, loc := range m.chunkservers {
-		score := 0.0
-		if loc.Resources != nil {
-			// Weight CPU and memory equally, disk slightly less
-			// (since disk is typically larger and less critical short-term)
-			score = loc.Resources.CPUUsagePercent*0.4 +
-				loc.Resources.MemoryUsagePercent*0.4 +
-				loc.Resources.DiskUsagePercent*0.2
-		}
-		scores = append(scores, serverScore{loc: loc, score: score})
-	}
-
-	// Sort by score (lowest first)
-	for i := 0; i < len(scores)-1; i++ {
-		for j := i + 1; j < len(scores); j++ {
-			if scores[j].score < scores[i].score {
-				scores[i], scores[j] = scores[j], scores[i]
-			}
-		}
-	}
-
-	result := make([]*ChunkLocation, 0, n)
-	for i := 0; i < len(scores) && i < n; i++ {
-		result = append(result, scores[i].loc)
-	}
-	return result
 }
 
 // generateChunkHandle generates a new unique chunk handle using UUIDv4
@@ -823,26 +759,15 @@ func (m *Master) reassignPrimaryLocked(chunk *ChunkInfo) {
 		return
 	}
 
-	// Select the least loaded replica as the new primary
+	// Select first available replica as the new primary
 	m.csMu.RLock()
 	var bestLoc *ChunkLocation
-	var bestScore float64 = 101 // Higher than any possible score
-
 	for i := range chunk.Locations {
 		loc := &chunk.Locations[i]
 		// Check if this server is still alive
-		if cs, ok := m.chunkservers[loc.ServerID]; ok {
-			// Calculate load score (lower is better)
-			score := 50.0 // Default score if no resource data
-			if cs.Resources != nil {
-				score = cs.Resources.CPUUsagePercent*0.4 +
-					cs.Resources.MemoryUsagePercent*0.4 +
-					cs.Resources.DiskUsagePercent*0.2
-			}
-			if score < bestScore {
-				bestScore = score
-				bestLoc = loc
-			}
+		if _, ok := m.chunkservers[loc.ServerID]; ok {
+			bestLoc = loc
+			break
 		}
 	}
 	m.csMu.RUnlock()
