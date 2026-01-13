@@ -13,6 +13,7 @@ require (
 )
 
 require (
+	github.com/chzyer/readline v1.5.1 // indirect
 	golang.org/x/net v0.38.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/text v0.23.0 // indirect

@@ -1,15 +1,19 @@
 package clientcli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/chzyer/readline"
+
 	gfs "eddisonso.com/go-gfs/pkg/go-gfs-sdk"
 )
+
+var commands = []string{"ls", "cat", "read", "write", "rm", "mv", "rename", "info", "pressure", "help", "exit", "quit"}
 
 type App struct {
 	masterAddr string
@@ -30,14 +34,45 @@ func Run(args []string) error {
 	fmt.Println("Type 'help' for commands, 'exit' to quit")
 	fmt.Println()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	completer := readline.NewPrefixCompleter(
+		readline.PcItem("ls", readline.PcItemDynamic(app.completeGFSPath)),
+		readline.PcItem("cat", readline.PcItemDynamic(app.completeGFSPath)),
+		readline.PcItem("read", readline.PcItemDynamic(app.completeGFSPath)),
+		readline.PcItem("write", readline.PcItemDynamic(app.completeGFSPath)),
+		readline.PcItem("rm", readline.PcItemDynamic(app.completeGFSPath)),
+		readline.PcItem("mv", readline.PcItemDynamic(app.completeGFSPath)),
+		readline.PcItem("rename", readline.PcItemDynamic(app.completeGFSPath)),
+		readline.PcItem("info", readline.PcItemDynamic(app.completeGFSPath)),
+		readline.PcItem("pressure"),
+		readline.PcItem("help"),
+		readline.PcItem("exit"),
+		readline.PcItem("quit"),
+	)
+
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          "gfs> ",
+		AutoComplete:    completer,
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize readline: %w", err)
+	}
+	defer rl.Close()
+
 	for {
-		fmt.Print("gfs> ")
-		if !scanner.Scan() {
+		line, err := rl.Readline()
+		if err == readline.ErrInterrupt {
+			continue
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
 			break
 		}
 
-		line := strings.TrimSpace(scanner.Text())
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
@@ -53,6 +88,30 @@ func Run(args []string) error {
 	}
 
 	return nil
+}
+
+func (a *App) completeGFSPath(line string) []string {
+	// Extract the path prefix being typed
+	parts := strings.Fields(line)
+	prefix := ""
+	if len(parts) > 0 {
+		prefix = parts[len(parts)-1]
+	}
+
+	// Fetch files from GFS
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	files, err := a.client.ListFiles(ctx, prefix)
+	if err != nil {
+		return nil
+	}
+
+	var completions []string
+	for _, f := range files {
+		completions = append(completions, f.Path)
+	}
+	return completions
 }
 
 func (a *App) parseFlags(args []string) {
