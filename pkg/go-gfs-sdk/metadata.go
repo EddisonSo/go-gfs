@@ -163,10 +163,11 @@ func (c *Client) GetClusterPressure(ctx context.Context) (*pb.GetClusterPressure
 // ProgressFunc is called after each chunk write with bytes written so far.
 type ProgressFunc func(bytesWritten int64)
 
-// PreparedUpload holds pre-allocated chunks for efficient uploads.
+// PreparedUpload holds state for streaming uploads with on-demand chunk allocation.
 type PreparedUpload struct {
 	client       *Client
 	path         string
+	namespace    string
 	chunks       []*pb.ChunkLocationInfo
 	index        int // current chunk index
 	bytesWritten int64
@@ -179,60 +180,27 @@ func (p *PreparedUpload) OnProgress(fn ProgressFunc) {
 	p.onProgress = fn
 }
 
-// PrepareUpload pre-allocates chunks for a file of the given size.
-// This eliminates allocation delays during streaming uploads.
+// PrepareUpload prepares for a streaming upload. Chunks are allocated on-demand.
 func (c *Client) PrepareUpload(ctx context.Context, path string, size int64) (*PreparedUpload, error) {
 	return c.PrepareUploadWithNamespace(ctx, path, "", size)
 }
 
-// PrepareUploadWithNamespace pre-allocates chunks for a file of the given size with a namespace.
+// PrepareUploadWithNamespace prepares for a streaming upload with a namespace.
+// Chunks are allocated on-demand as data is written, not pre-allocated.
 func (c *Client) PrepareUploadWithNamespace(ctx context.Context, path, namespace string, size int64) (*PreparedUpload, error) {
 	normalizedNamespace := normalizeNamespace(namespace)
 	// Create file if it doesn't exist
 	c.CreateFileWithNamespace(ctx, path, normalizedNamespace)
 
-	// Get existing chunks
+	// Get existing chunks (we'll allocate more on-demand as needed)
 	existing, _ := c.GetChunkLocationsWithNamespace(ctx, path, normalizedNamespace)
 
-	// Calculate how many chunks we need
-	chunksNeeded := int((size + c.maxChunkSize - 1) / c.maxChunkSize)
-	if chunksNeeded == 0 {
-		chunksNeeded = 1
-	}
-
-	// Calculate space available in last existing chunk
-	var spaceInLast int64
-	if len(existing) > 0 {
-		lastChunk := existing[len(existing)-1]
-		spaceInLast = c.maxChunkSize - int64(lastChunk.Size)
-		if spaceInLast > 0 {
-			// Account for space in last chunk
-			remainingAfterLast := size - spaceInLast
-			if remainingAfterLast <= 0 {
-				chunksNeeded = 0 // existing chunk has enough space
-			} else {
-				chunksNeeded = int((remainingAfterLast + c.maxChunkSize - 1) / c.maxChunkSize)
-			}
-		}
-	}
-
-	// Pre-allocate all needed chunks
-	chunks := make([]*pb.ChunkLocationInfo, 0, len(existing)+chunksNeeded)
-	chunks = append(chunks, existing...)
-
-	for i := 0; i < chunksNeeded; i++ {
-		chunk, err := c.AllocateChunkWithNamespace(ctx, path, normalizedNamespace)
-		if err != nil {
-			return nil, fmt.Errorf("failed to pre-allocate chunk %d: %w", i, err)
-		}
-		chunks = append(chunks, chunk)
-	}
-
 	return &PreparedUpload{
-		client: c,
-		path:   path,
-		chunks: chunks,
-		index:  0,
+		client:    c,
+		path:      path,
+		namespace: normalizedNamespace,
+		chunks:    existing,
+		index:     0,
 	}, nil
 }
 

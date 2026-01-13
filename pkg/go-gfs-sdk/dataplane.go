@@ -286,23 +286,27 @@ func (p *PreparedUpload) AppendFrom(ctx context.Context, r io.Reader) (int64, er
 	return total, nil
 }
 
-// appendData writes data using pre-allocated chunks (no gRPC allocation calls).
+// appendData writes data, allocating new chunks on-demand as needed.
 func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, error) {
 	c := p.client
 	total := 0
 	remaining := data
 
 	for len(remaining) > 0 {
-		// Get current chunk from pre-allocated list
+		// Allocate new chunk if needed
 		if p.index >= len(p.chunks) {
-			return total, fmt.Errorf("not enough pre-allocated chunks")
+			chunk, err := c.AllocateChunkWithNamespace(ctx, p.path, p.namespace)
+			if err != nil {
+				return total, fmt.Errorf("failed to allocate chunk: %w", err)
+			}
+			p.chunks = append(p.chunks, chunk)
 		}
 		chunk := p.chunks[p.index]
 
 		// Calculate space available in current chunk
 		spaceAvailable := c.maxChunkSize - int64(chunk.Size)
 		if spaceAvailable <= 0 {
-			// Move to next chunk
+			// Chunk is full, move to next
 			p.index++
 			continue
 		}
