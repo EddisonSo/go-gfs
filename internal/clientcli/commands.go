@@ -88,7 +88,7 @@ func (a *App) cmdRead(args []string) error {
 	}
 
 	var progress *TransferProgress
-	if totalSize > 1024*1024 && outputFile != "" {
+	if outputFile != "" && totalSize > 0 {
 		progress = NewTransferProgress(totalSize, "Downloading")
 		progress.Start()
 		defer progress.Finish()
@@ -182,7 +182,7 @@ func writeFromFile(client *gfs.Client, ctx context.Context, gfsPath, localPath, 
 
 	var progress *TransferProgress
 	var reader io.Reader = file
-	if totalSize > 1024*1024 {
+	if totalSize > 0 {
 		progress = NewTransferProgress(totalSize, "Uploading")
 		progress.Start()
 		defer progress.Finish()
