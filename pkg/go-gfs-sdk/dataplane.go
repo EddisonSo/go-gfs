@@ -16,8 +16,13 @@ import (
 
 // ReadFile reads the entire file into memory.
 func (c *Client) ReadFile(ctx context.Context, path string) ([]byte, error) {
+	return c.ReadFileWithNamespace(ctx, path, "")
+}
+
+// ReadFileWithNamespace reads the entire file into memory with a namespace.
+func (c *Client) ReadFileWithNamespace(ctx context.Context, path, namespace string) ([]byte, error) {
 	var buf bytes.Buffer
-	if _, err := c.ReadTo(ctx, path, &buf); err != nil {
+	if _, err := c.ReadToWithNamespace(ctx, path, namespace, &buf); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
@@ -33,7 +38,13 @@ type chunkReadResult struct {
 // ReadTo streams file contents to the provided writer.
 // Chunks are read in parallel for better performance.
 func (c *Client) ReadTo(ctx context.Context, path string, w io.Writer) (int64, error) {
-	chunks, err := c.GetChunkLocations(ctx, path)
+	return c.ReadToWithNamespace(ctx, path, "", w)
+}
+
+// ReadToWithNamespace streams file contents to the provided writer with a namespace.
+// Chunks are read in parallel for better performance.
+func (c *Client) ReadToWithNamespace(ctx context.Context, path, namespace string, w io.Writer) (int64, error) {
+	chunks, err := c.GetChunkLocationsWithNamespace(ctx, path, namespace)
 	if err != nil {
 		return 0, err
 	}
@@ -113,11 +124,21 @@ func (c *Client) ReadTo(ctx context.Context, path string, w io.Writer) (int64, e
 
 // Append adds data to the end of the file, splitting across chunks as needed.
 func (c *Client) Append(ctx context.Context, path string, data []byte) (int, error) {
-	return c.appendData(ctx, path, data)
+	return c.AppendWithNamespace(ctx, path, "", data)
 }
 
 // AppendFrom streams data from a reader and appends it to the file.
 func (c *Client) AppendFrom(ctx context.Context, path string, r io.Reader) (int64, error) {
+	return c.AppendFromWithNamespace(ctx, path, "", r)
+}
+
+// AppendWithNamespace adds data to the end of the file in a namespace.
+func (c *Client) AppendWithNamespace(ctx context.Context, path, namespace string, data []byte) (int, error) {
+	return c.appendData(ctx, path, normalizeNamespace(namespace), data)
+}
+
+// AppendFromWithNamespace streams data from a reader and appends it to the file in a namespace.
+func (c *Client) AppendFromWithNamespace(ctx context.Context, path, namespace string, r io.Reader) (int64, error) {
 	buf := make([]byte, int(c.maxChunkSize))
 	var total int64
 
@@ -126,7 +147,7 @@ func (c *Client) AppendFrom(ctx context.Context, path string, r io.Reader) (int6
 		// This avoids making a gRPC call for every small HTTP chunk.
 		n, err := io.ReadFull(r, buf)
 		if n > 0 {
-			written, writeErr := c.appendData(ctx, path, buf[:n])
+			written, writeErr := c.appendData(ctx, path, normalizeNamespace(namespace), buf[:n])
 			total += int64(written)
 			if writeErr != nil {
 				return total, writeErr
@@ -277,13 +298,13 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 	return total, nil
 }
 
-func (c *Client) appendData(ctx context.Context, path string, data []byte) (int, error) {
+func (c *Client) appendData(ctx context.Context, path, namespace string, data []byte) (int, error) {
 	total := 0
 	remaining := data
 
 	for len(remaining) > 0 {
 		chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
-		chunk, spaceAvailable, err := c.getChunkForAppend(chunkCtx, path)
+		chunk, spaceAvailable, err := c.getChunkForAppend(chunkCtx, path, namespace)
 		cancel()
 		if err != nil {
 			return total, err
@@ -318,7 +339,7 @@ func (c *Client) appendData(ctx context.Context, path string, data []byte) (int,
 	return total, nil
 }
 
-func (c *Client) writeAtData(ctx context.Context, path string, data []byte, offset int64) (int, error) {
+func (c *Client) writeAtData(ctx context.Context, path, namespace string, data []byte, offset int64) (int, error) {
 	if offset < 0 {
 		return 0, ErrInvalidOffset
 	}
@@ -332,7 +353,7 @@ func (c *Client) writeAtData(ctx context.Context, path string, data []byte, offs
 		offsetInChunk := currentOffset % c.maxChunkSize
 
 		chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
-		chunk, err := c.getChunkByIndex(chunkCtx, path, chunkIndex)
+		chunk, err := c.getChunkByIndex(chunkCtx, path, namespace, chunkIndex)
 		cancel()
 		if err != nil {
 			return total, err
@@ -366,8 +387,8 @@ func (c *Client) writeAtData(ctx context.Context, path string, data []byte, offs
 	return total, nil
 }
 
-func (c *Client) getChunkForAppend(ctx context.Context, path string) (*pb.ChunkLocationInfo, int64, error) {
-	chunks, err := c.GetChunkLocations(ctx, path)
+func (c *Client) getChunkForAppend(ctx context.Context, path, namespace string) (*pb.ChunkLocationInfo, int64, error) {
+	chunks, err := c.GetChunkLocationsWithNamespace(ctx, path, namespace)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -380,19 +401,19 @@ func (c *Client) getChunkForAppend(ctx context.Context, path string) (*pb.ChunkL
 		}
 	}
 
-	alloc, err := c.AllocateChunk(ctx, path)
+	alloc, err := c.AllocateChunkWithNamespace(ctx, path, namespace)
 	if err != nil {
 		return nil, 0, err
 	}
 	return alloc, c.maxChunkSize, nil
 }
 
-func (c *Client) getChunkByIndex(ctx context.Context, path string, index int) (*pb.ChunkLocationInfo, error) {
+func (c *Client) getChunkByIndex(ctx context.Context, path, namespace string, index int) (*pb.ChunkLocationInfo, error) {
 	if index < 0 {
 		return nil, ErrInvalidOffset
 	}
 
-	chunks, err := c.GetChunkLocations(ctx, path)
+	chunks, err := c.GetChunkLocationsWithNamespace(ctx, path, namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +424,7 @@ func (c *Client) getChunkByIndex(ctx context.Context, path string, index int) (*
 
 	var chunk *pb.ChunkLocationInfo
 	for i := len(chunks); i <= index; i++ {
-		chunk, err = c.AllocateChunk(ctx, path)
+		chunk, err = c.AllocateChunkWithNamespace(ctx, path, namespace)
 		if err != nil {
 			return nil, err
 		}

@@ -8,27 +8,47 @@ import (
 
 // Write appends data to the file at path.
 func (c *Client) Write(ctx context.Context, path string, data []byte) (int, error) {
-	return c.Append(ctx, path, data)
+	return c.WriteWithNamespace(ctx, path, "", data)
 }
 
 // WriteFromFile appends the contents of a local file to the file at path.
 func (c *Client) WriteFromFile(ctx context.Context, path, localPath string) (int64, error) {
+	return c.WriteFromFileWithNamespace(ctx, path, localPath, "")
+}
+
+// WriteWithNamespace appends data to the file at path in a namespace.
+func (c *Client) WriteWithNamespace(ctx context.Context, path, namespace string, data []byte) (int, error) {
+	return c.AppendWithNamespace(ctx, path, namespace, data)
+}
+
+// WriteFromFileWithNamespace appends the contents of a local file to the file at path in a namespace.
+func (c *Client) WriteFromFileWithNamespace(ctx context.Context, path, localPath, namespace string) (int64, error) {
 	file, err := os.Open(localPath)
 	if err != nil {
 		return 0, err
 	}
 	defer file.Close()
 
-	return c.AppendFrom(ctx, path, file)
+	return c.AppendFromWithNamespace(ctx, path, namespace, file)
 }
 
 // WriteAt overwrites data starting at the provided offset.
 func (c *Client) WriteAt(ctx context.Context, path string, data []byte, offset int64) (int, error) {
-	return c.writeAtData(ctx, path, data, offset)
+	return c.WriteAtWithNamespace(ctx, path, "", data, offset)
+}
+
+// WriteAtWithNamespace overwrites data starting at the provided offset in a namespace.
+func (c *Client) WriteAtWithNamespace(ctx context.Context, path, namespace string, data []byte, offset int64) (int, error) {
+	return c.writeAtData(ctx, path, normalizeNamespace(namespace), data, offset)
 }
 
 // WriteFromFileAt overwrites data from a local file starting at the provided offset.
 func (c *Client) WriteFromFileAt(ctx context.Context, path, localPath string, offset int64) (int64, error) {
+	return c.WriteFromFileAtWithNamespace(ctx, path, localPath, "", offset)
+}
+
+// WriteFromFileAtWithNamespace overwrites data from a local file starting at the provided offset in a namespace.
+func (c *Client) WriteFromFileAtWithNamespace(ctx context.Context, path, localPath, namespace string, offset int64) (int64, error) {
 	file, err := os.Open(localPath)
 	if err != nil {
 		return 0, err
@@ -42,7 +62,7 @@ func (c *Client) WriteFromFileAt(ctx context.Context, path, localPath string, of
 	for {
 		n, err := file.Read(buf)
 		if n > 0 {
-			written, writeErr := c.writeAtData(ctx, path, buf[:n], currentOffset)
+			written, writeErr := c.writeAtData(ctx, path, normalizeNamespace(namespace), buf[:n], currentOffset)
 			total += int64(written)
 			currentOffset += int64(written)
 			if writeErr != nil {
@@ -62,16 +82,26 @@ func (c *Client) WriteFromFileAt(ctx context.Context, path, localPath string, of
 
 // Read reads the entire file into memory.
 func (c *Client) Read(ctx context.Context, path string) ([]byte, error) {
-	return c.ReadFile(ctx, path)
+	return c.ReadWithNamespace(ctx, path, "")
 }
 
 // ReadToFile writes file contents to a local file.
 func (c *Client) ReadToFile(ctx context.Context, path, localPath string) (int64, error) {
+	return c.ReadToFileWithNamespace(ctx, path, localPath, "")
+}
+
+// ReadWithNamespace reads the entire file into memory with a namespace.
+func (c *Client) ReadWithNamespace(ctx context.Context, path, namespace string) ([]byte, error) {
+	return c.ReadFileWithNamespace(ctx, path, namespace)
+}
+
+// ReadToFileWithNamespace writes file contents to a local file with a namespace.
+func (c *Client) ReadToFileWithNamespace(ctx context.Context, path, localPath, namespace string) (int64, error) {
 	out, err := os.Create(localPath)
 	if err != nil {
 		return 0, err
 	}
 	defer out.Close()
 
-	return c.ReadTo(ctx, path, out)
+	return c.ReadToWithNamespace(ctx, path, namespace, out)
 }

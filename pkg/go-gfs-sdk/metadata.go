@@ -39,7 +39,15 @@ func (c *Client) CreateFileWithNamespace(ctx context.Context, path, namespace st
 
 // GetFile returns file metadata.
 func (c *Client) GetFile(ctx context.Context, path string) (*pb.FileInfoResponse, error) {
-	resp, err := c.master.GetFile(ctx, &pb.GetFileRequest{Path: path})
+	return c.GetFileWithNamespace(ctx, path, "")
+}
+
+// GetFileWithNamespace returns file metadata with a namespace.
+func (c *Client) GetFileWithNamespace(ctx context.Context, path, namespace string) (*pb.FileInfoResponse, error) {
+	resp, err := c.master.GetFile(ctx, &pb.GetFileRequest{
+		Path:      path,
+		Namespace: normalizeNamespace(namespace),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +59,15 @@ func (c *Client) GetFile(ctx context.Context, path string) (*pb.FileInfoResponse
 
 // DeleteFile removes a file entry.
 func (c *Client) DeleteFile(ctx context.Context, path string) error {
-	resp, err := c.master.DeleteFile(ctx, &pb.DeleteFileRequest{Path: path})
+	return c.DeleteFileWithNamespace(ctx, path, "")
+}
+
+// DeleteFileWithNamespace removes a file entry in a namespace.
+func (c *Client) DeleteFileWithNamespace(ctx context.Context, path, namespace string) error {
+	resp, err := c.master.DeleteFile(ctx, &pb.DeleteFileRequest{
+		Path:      path,
+		Namespace: normalizeNamespace(namespace),
+	})
 	if err != nil {
 		return err
 	}
@@ -63,7 +79,16 @@ func (c *Client) DeleteFile(ctx context.Context, path string) error {
 
 // RenameFile renames a file.
 func (c *Client) RenameFile(ctx context.Context, oldPath, newPath string) error {
-	resp, err := c.master.RenameFile(ctx, &pb.RenameFileRequest{OldPath: oldPath, NewPath: newPath})
+	return c.RenameFileWithNamespace(ctx, oldPath, newPath, "")
+}
+
+// RenameFileWithNamespace renames a file within a namespace.
+func (c *Client) RenameFileWithNamespace(ctx context.Context, oldPath, newPath, namespace string) error {
+	resp, err := c.master.RenameFile(ctx, &pb.RenameFileRequest{
+		OldPath:   oldPath,
+		NewPath:   newPath,
+		Namespace: normalizeNamespace(namespace),
+	})
 	if err != nil {
 		return err
 	}
@@ -75,7 +100,15 @@ func (c *Client) RenameFile(ctx context.Context, oldPath, newPath string) error 
 
 // ListFiles lists files under a prefix.
 func (c *Client) ListFiles(ctx context.Context, prefix string) ([]*pb.FileInfoResponse, error) {
-	resp, err := c.master.ListFiles(ctx, &pb.ListFilesRequest{Prefix: prefix})
+	return c.ListFilesWithNamespace(ctx, "", prefix)
+}
+
+// ListFilesWithNamespace lists files under a prefix, optionally scoped to a namespace.
+func (c *Client) ListFilesWithNamespace(ctx context.Context, namespace, prefix string) ([]*pb.FileInfoResponse, error) {
+	resp, err := c.master.ListFiles(ctx, &pb.ListFilesRequest{
+		Prefix:    prefix,
+		Namespace: namespace,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +117,15 @@ func (c *Client) ListFiles(ctx context.Context, prefix string) ([]*pb.FileInfoRe
 
 // AllocateChunk requests a new chunk for a file.
 func (c *Client) AllocateChunk(ctx context.Context, path string) (*pb.ChunkLocationInfo, error) {
-	resp, err := c.master.AllocateChunk(ctx, &pb.AllocateChunkRequest{Path: path})
+	return c.AllocateChunkWithNamespace(ctx, path, "")
+}
+
+// AllocateChunkWithNamespace requests a new chunk for a file in a namespace.
+func (c *Client) AllocateChunkWithNamespace(ctx context.Context, path, namespace string) (*pb.ChunkLocationInfo, error) {
+	resp, err := c.master.AllocateChunk(ctx, &pb.AllocateChunkRequest{
+		Path:      path,
+		Namespace: normalizeNamespace(namespace),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +137,15 @@ func (c *Client) AllocateChunk(ctx context.Context, path string) (*pb.ChunkLocat
 
 // GetChunkLocations returns chunk locations for a file.
 func (c *Client) GetChunkLocations(ctx context.Context, path string) ([]*pb.ChunkLocationInfo, error) {
-	resp, err := c.master.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{Path: path})
+	return c.GetChunkLocationsWithNamespace(ctx, path, "")
+}
+
+// GetChunkLocationsWithNamespace returns chunk locations for a file in a namespace.
+func (c *Client) GetChunkLocationsWithNamespace(ctx context.Context, path, namespace string) ([]*pb.ChunkLocationInfo, error) {
+	resp, err := c.master.GetChunkLocations(ctx, &pb.GetChunkLocationsRequest{
+		Path:      path,
+		Namespace: normalizeNamespace(namespace),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -138,11 +187,12 @@ func (c *Client) PrepareUpload(ctx context.Context, path string, size int64) (*P
 
 // PrepareUploadWithNamespace pre-allocates chunks for a file of the given size with a namespace.
 func (c *Client) PrepareUploadWithNamespace(ctx context.Context, path, namespace string, size int64) (*PreparedUpload, error) {
+	normalizedNamespace := normalizeNamespace(namespace)
 	// Create file if it doesn't exist
-	c.CreateFileWithNamespace(ctx, path, namespace)
+	c.CreateFileWithNamespace(ctx, path, normalizedNamespace)
 
 	// Get existing chunks
-	existing, _ := c.GetChunkLocations(ctx, path)
+	existing, _ := c.GetChunkLocationsWithNamespace(ctx, path, normalizedNamespace)
 
 	// Calculate how many chunks we need
 	chunksNeeded := int((size + c.maxChunkSize - 1) / c.maxChunkSize)
@@ -171,7 +221,7 @@ func (c *Client) PrepareUploadWithNamespace(ctx context.Context, path, namespace
 	chunks = append(chunks, existing...)
 
 	for i := 0; i < chunksNeeded; i++ {
-		chunk, err := c.AllocateChunk(ctx, path)
+		chunk, err := c.AllocateChunkWithNamespace(ctx, path, normalizedNamespace)
 		if err != nil {
 			return nil, fmt.Errorf("failed to pre-allocate chunk %d: %w", i, err)
 		}

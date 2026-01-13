@@ -57,10 +57,30 @@ const (
 const LeaseDuration = 60 * time.Second
 const defaultNamespace = "default"
 
+type fileKey struct {
+	Namespace string
+	Path      string
+}
+
+func normalizeNamespace(namespace string) string {
+	if namespace == "" {
+		return defaultNamespace
+	}
+	return namespace
+}
+
+func makeFileKey(namespace, path string) fileKey {
+	return fileKey{
+		Namespace: normalizeNamespace(namespace),
+		Path:      path,
+	}
+}
+
 // ChunkInfo contains metadata about a chunk
 type ChunkInfo struct {
 	Handle          ChunkHandle
 	FilePath        string          // File this chunk belongs to
+	Namespace       string          // Namespace this chunk belongs to
 	Locations       []ChunkLocation // Replica locations
 	Version         uint64          // Chunk version for consistency
 	Primary         *ChunkLocation  // Current primary (lease holder)
@@ -82,8 +102,8 @@ type FileInfo struct {
 
 // Master is the central metadata server for GFS
 type Master struct {
-	// File namespace: path -> file info
-	files  map[string]*FileInfo
+	// File namespace: namespace+path -> file info
+	files  map[fileKey]*FileInfo
 	fileMu sync.RWMutex
 
 	// Chunk metadata: handle -> chunk info
@@ -113,7 +133,7 @@ type Master struct {
 // NewMaster creates a new master server with WAL at the given path
 func NewMaster(walPath string) (*Master, error) {
 	m := &Master{
-		files:             make(map[string]*FileInfo),
+		files:             make(map[fileKey]*FileInfo),
 		chunks:            make(map[ChunkHandle]*ChunkInfo),
 		chunkservers:      make(map[ChunkServerID]*ChunkLocation),
 		pendingDeletes:    make(map[ChunkServerID][]ChunkHandle),
@@ -172,7 +192,7 @@ func (m *Master) replayWAL(walPath string) error {
 				slog.Warn("failed to unmarshal DELETE_FILE", "error", err)
 				continue
 			}
-			m.replayDeleteFile(data.Path)
+			m.replayDeleteFile(data.Path, data.Namespace)
 
 		case wal.OpRenameFile:
 			var data wal.RenameFileData
@@ -180,7 +200,7 @@ func (m *Master) replayWAL(walPath string) error {
 				slog.Warn("failed to unmarshal RENAME_FILE", "error", err)
 				continue
 			}
-			m.replayRenameFile(data.OldPath, data.NewPath)
+			m.replayRenameFile(data.OldPath, data.NewPath, data.Namespace)
 
 		case wal.OpAddChunk:
 			var data wal.AddChunkData
@@ -188,7 +208,7 @@ func (m *Master) replayWAL(walPath string) error {
 				slog.Warn("failed to unmarshal ADD_CHUNK", "error", err)
 				continue
 			}
-			m.replayAddChunk(data.Path, data.ChunkHandle)
+			m.replayAddChunk(data.Path, data.Namespace, data.ChunkHandle)
 
 		case wal.OpCommitChunk:
 			var data wal.CommitChunkData
@@ -209,11 +229,9 @@ func (m *Master) replayWAL(walPath string) error {
 
 // replayCreateFile recreates a file from WAL (no WAL logging)
 func (m *Master) replayCreateFile(path, namespace string, chunkSize uint64) {
-	if namespace == "" {
-		namespace = defaultNamespace
-	}
+	namespace = normalizeNamespace(namespace)
 	now := time.Now()
-	m.files[path] = &FileInfo{
+	m.files[makeFileKey(namespace, path)] = &FileInfo{
 		Path:       path,
 		Namespace:  namespace,
 		Chunks:     []ChunkHandle{},
@@ -225,23 +243,26 @@ func (m *Master) replayCreateFile(path, namespace string, chunkSize uint64) {
 }
 
 // replayDeleteFile deletes a file from WAL (no WAL logging)
-func (m *Master) replayDeleteFile(path string) {
-	if file, exists := m.files[path]; exists {
+func (m *Master) replayDeleteFile(path, namespace string) {
+	key := makeFileKey(namespace, path)
+	if file, exists := m.files[key]; exists {
 		for _, handle := range file.Chunks {
 			delete(m.chunks, handle)
 		}
-		delete(m.files, path)
+		delete(m.files, key)
 	}
 }
 
 // replayRenameFile renames a file from WAL (no WAL logging)
-func (m *Master) replayRenameFile(oldPath, newPath string) {
-	if file, exists := m.files[oldPath]; exists {
+func (m *Master) replayRenameFile(oldPath, newPath, namespace string) {
+	key := makeFileKey(namespace, oldPath)
+	if file, exists := m.files[key]; exists {
 		// Update file path
 		file.Path = newPath
 		// Move to new key
-		m.files[newPath] = file
-		delete(m.files, oldPath)
+		newKey := makeFileKey(namespace, newPath)
+		m.files[newKey] = file
+		delete(m.files, key)
 		// Update chunk back-references
 		for _, handle := range file.Chunks {
 			if chunk, ok := m.chunks[handle]; ok {
@@ -252,13 +273,15 @@ func (m *Master) replayRenameFile(oldPath, newPath string) {
 }
 
 // replayAddChunk adds a chunk from WAL (no WAL logging)
-func (m *Master) replayAddChunk(path, chunkHandle string) {
+func (m *Master) replayAddChunk(path, namespace, chunkHandle string) {
 	handle := ChunkHandle(chunkHandle)
-	if file, exists := m.files[path]; exists {
+	key := makeFileKey(namespace, path)
+	if file, exists := m.files[key]; exists {
 		file.Chunks = append(file.Chunks, handle)
 		m.chunks[handle] = &ChunkInfo{
 			Handle:    handle,
 			FilePath:  path,
+			Namespace: normalizeNamespace(namespace),
 			Locations: []ChunkLocation{},
 			Version:   1,
 			Status:    ChunkPending,
@@ -273,7 +296,8 @@ func (m *Master) replayCommitChunk(chunkHandle string, size uint64) {
 		chunk.Status = ChunkCommitted
 		chunk.Size = size
 		// Update file size
-		if file, exists := m.files[chunk.FilePath]; exists {
+		key := makeFileKey(chunk.Namespace, chunk.FilePath)
+		if file, exists := m.files[key]; exists {
 			var totalSize uint64
 			for _, h := range file.Chunks {
 				if c, ok := m.chunks[h]; ok {
@@ -449,13 +473,12 @@ func (m *Master) CreateFile(path, namespace string) (*FileInfo, error) {
 	m.fileMu.Lock()
 	defer m.fileMu.Unlock()
 
-	if _, exists := m.files[path]; exists {
+	key := makeFileKey(namespace, path)
+	if _, exists := m.files[key]; exists {
 		return nil, fmt.Errorf("file already exists: %s", path)
 	}
 
-	if namespace == "" {
-		namespace = defaultNamespace
-	}
+	namespace = normalizeNamespace(namespace)
 
 	// Log to WAL before applying
 	if err := m.wal.LogCreateFile(path, namespace, m.defaultChunkSize); err != nil {
@@ -472,18 +495,19 @@ func (m *Master) CreateFile(path, namespace string) (*FileInfo, error) {
 		CreatedAt:  now,
 		ModifiedAt: now,
 	}
-	m.files[path] = file
+	m.files[key] = file
 
-	slog.Info("created file", "path", path)
+	slog.Info("created file", "path", path, "namespace", namespace)
 	return file, nil
 }
 
 // GetFile returns file info for a path
-func (m *Master) GetFile(path string) (*FileInfo, error) {
+func (m *Master) GetFile(path, namespace string) (*FileInfo, error) {
 	m.fileMu.RLock()
 	defer m.fileMu.RUnlock()
 
-	file, exists := m.files[path]
+	key := makeFileKey(namespace, path)
+	file, exists := m.files[key]
 	if !exists {
 		return nil, fmt.Errorf("file not found: %s", path)
 	}
@@ -491,16 +515,17 @@ func (m *Master) GetFile(path string) (*FileInfo, error) {
 }
 
 // DeleteFile removes a file from the namespace and schedules chunk deletion
-func (m *Master) DeleteFile(path string) error {
+func (m *Master) DeleteFile(path, namespace string) error {
 	m.fileMu.Lock()
-	file, exists := m.files[path]
+	key := makeFileKey(namespace, path)
+	file, exists := m.files[key]
 	if !exists {
 		m.fileMu.Unlock()
 		return fmt.Errorf("file not found: %s", path)
 	}
 
 	// Log to WAL before applying
-	if err := m.wal.LogDeleteFile(path); err != nil {
+	if err := m.wal.LogDeleteFile(path, normalizeNamespace(namespace)); err != nil {
 		m.fileMu.Unlock()
 		return fmt.Errorf("WAL write failed: %w", err)
 	}
@@ -509,7 +534,7 @@ func (m *Master) DeleteFile(path string) error {
 	chunkHandles := make([]ChunkHandle, len(file.Chunks))
 	copy(chunkHandles, file.Chunks)
 
-	delete(m.files, path)
+	delete(m.files, key)
 	m.fileMu.Unlock()
 
 	// Remove chunks from registry and schedule deletion on chunkservers
@@ -527,28 +552,31 @@ func (m *Master) DeleteFile(path string) error {
 	m.pendingDeletesMu.Unlock()
 	m.chunkMu.Unlock()
 
-	slog.Info("deleted file", "path", path, "chunks", len(chunkHandles))
+	slog.Info("deleted file", "path", path, "namespace", normalizeNamespace(namespace), "chunks", len(chunkHandles))
 	return nil
 }
 
 // RenameFile renames/moves a file from oldPath to newPath
-func (m *Master) RenameFile(oldPath, newPath string) error {
+func (m *Master) RenameFile(oldPath, newPath, namespace string) error {
 	m.fileMu.Lock()
 	defer m.fileMu.Unlock()
 
 	// Check source exists
-	file, exists := m.files[oldPath]
+	namespace = normalizeNamespace(namespace)
+	oldKey := makeFileKey(namespace, oldPath)
+	file, exists := m.files[oldKey]
 	if !exists {
 		return fmt.Errorf("file not found: %s", oldPath)
 	}
 
 	// Check destination doesn't exist
-	if _, exists := m.files[newPath]; exists {
+	newKey := makeFileKey(namespace, newPath)
+	if _, exists := m.files[newKey]; exists {
 		return fmt.Errorf("file already exists: %s", newPath)
 	}
 
 	// Log to WAL before applying
-	if err := m.wal.LogRenameFile(oldPath, newPath); err != nil {
+	if err := m.wal.LogRenameFile(oldPath, newPath, namespace); err != nil {
 		return fmt.Errorf("WAL write failed: %w", err)
 	}
 
@@ -557,8 +585,8 @@ func (m *Master) RenameFile(oldPath, newPath string) error {
 	file.ModifiedAt = time.Now()
 
 	// Move to new key
-	m.files[newPath] = file
-	delete(m.files, oldPath)
+	m.files[newKey] = file
+	delete(m.files, oldKey)
 
 	// Update chunk back-references
 	m.chunkMu.Lock()
@@ -569,27 +597,36 @@ func (m *Master) RenameFile(oldPath, newPath string) error {
 	}
 	m.chunkMu.Unlock()
 
-	slog.Info("renamed file", "oldPath", oldPath, "newPath", newPath)
+	slog.Info("renamed file", "oldPath", oldPath, "newPath", newPath, "namespace", namespace)
 	return nil
 }
 
 // ListFiles returns all files in the namespace
-func (m *Master) ListFiles() []*FileInfo {
+func (m *Master) ListFiles(namespace, prefix string) []*FileInfo {
 	m.fileMu.RLock()
 	defer m.fileMu.RUnlock()
 
 	files := make([]*FileInfo, 0, len(m.files))
 	for _, f := range m.files {
+		if namespace != "" && f.Namespace != namespace {
+			continue
+		}
+		if prefix != "" && len(f.Path) >= len(prefix) {
+			if f.Path[:len(prefix)] != prefix {
+				continue
+			}
+		}
 		files = append(files, f)
 	}
 	return files
 }
 
 // AddChunkToFile adds a new chunk to a file and returns chunk info with replica locations
-func (m *Master) AddChunkToFile(path string) (*ChunkInfo, error) {
+func (m *Master) AddChunkToFile(path, namespace string) (*ChunkInfo, error) {
 	// Check file exists first (brief read lock)
 	m.fileMu.RLock()
-	_, exists := m.files[path]
+	key := makeFileKey(namespace, path)
+	_, exists := m.files[key]
 	m.fileMu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("file not found: %s", path)
@@ -610,7 +647,7 @@ func (m *Master) AddChunkToFile(path string) (*ChunkInfo, error) {
 	}
 
 	// Log to WAL OUTSIDE of locks to avoid blocking
-	if err := m.wal.LogAddChunk(path, string(handle)); err != nil {
+	if err := m.wal.LogAddChunk(path, normalizeNamespace(namespace), string(handle)); err != nil {
 		return nil, fmt.Errorf("WAL write failed: %w", err)
 	}
 
@@ -619,7 +656,7 @@ func (m *Master) AddChunkToFile(path string) (*ChunkInfo, error) {
 	defer m.fileMu.Unlock()
 
 	// Re-check file still exists
-	file, exists := m.files[path]
+	file, exists := m.files[key]
 	if !exists {
 		return nil, fmt.Errorf("file not found: %s", path)
 	}
@@ -629,6 +666,7 @@ func (m *Master) AddChunkToFile(path string) (*ChunkInfo, error) {
 	chunkInfo := &ChunkInfo{
 		Handle:          handle,
 		FilePath:        path,
+		Namespace:       normalizeNamespace(namespace),
 		Locations:       replicas,
 		Version:         1,
 		Primary:         &replicas[0], // First replica is primary
@@ -641,7 +679,7 @@ func (m *Master) AddChunkToFile(path string) (*ChunkInfo, error) {
 	file.Chunks = append(file.Chunks, handle)
 	file.ModifiedAt = time.Now()
 
-	slog.Info("added chunk to file", "path", path, "chunk", handle, "replicas", len(replicas))
+	slog.Info("added chunk to file", "path", path, "namespace", normalizeNamespace(namespace), "chunk", handle, "replicas", len(replicas))
 	return chunkInfo, nil
 }
 
@@ -675,9 +713,10 @@ func (m *Master) GetChunkInfo(handle ChunkHandle) (*ChunkInfo, error) {
 }
 
 // GetFileChunks returns all chunk info for a file, checking and renewing leases as needed
-func (m *Master) GetFileChunks(path string) ([]*ChunkInfo, error) {
+func (m *Master) GetFileChunks(path, namespace string) ([]*ChunkInfo, error) {
 	m.fileMu.RLock()
-	file, exists := m.files[path]
+	key := makeFileKey(namespace, path)
+	file, exists := m.files[key]
 	m.fileMu.RUnlock()
 
 	if !exists {
@@ -873,6 +912,7 @@ func (m *Master) ConfirmChunkCommit(serverID ChunkServerID, handle ChunkHandle, 
 		return fmt.Errorf("chunk not found: %s", handle)
 	}
 	filePath := chunk.FilePath
+	fileNamespace := chunk.Namespace
 	m.chunkMu.RUnlock()
 
 	// Log to WAL OUTSIDE of locks to avoid blocking other operations
@@ -892,7 +932,7 @@ func (m *Master) ConfirmChunkCommit(serverID ChunkServerID, handle ChunkHandle, 
 
 	// Update file size
 	m.fileMu.Lock()
-	if file, exists := m.files[filePath]; exists {
+	if file, exists := m.files[makeFileKey(fileNamespace, filePath)]; exists {
 		// Recalculate total file size from all chunks
 		m.chunkMu.RLock()
 		var totalSize uint64

@@ -129,7 +129,7 @@ func (s *GRPCServer) CreateFile(ctx context.Context, req *pb.CreateFileRequest) 
 
 // GetFile returns file metadata
 func (s *GRPCServer) GetFile(ctx context.Context, req *pb.GetFileRequest) (*pb.GetFileResponse, error) {
-	file, err := s.master.GetFile(req.Path)
+	file, err := s.master.GetFile(req.Path, req.Namespace)
 	if err != nil {
 		return &pb.GetFileResponse{
 			Success: false,
@@ -145,7 +145,7 @@ func (s *GRPCServer) GetFile(ctx context.Context, req *pb.GetFileRequest) (*pb.G
 
 // DeleteFile removes a file from the namespace
 func (s *GRPCServer) DeleteFile(ctx context.Context, req *pb.DeleteFileRequest) (*pb.DeleteFileResponse, error) {
-	err := s.master.DeleteFile(req.Path)
+	err := s.master.DeleteFile(req.Path, req.Namespace)
 	if err != nil {
 		return &pb.DeleteFileResponse{
 			Success: false,
@@ -161,7 +161,7 @@ func (s *GRPCServer) DeleteFile(ctx context.Context, req *pb.DeleteFileRequest) 
 
 // RenameFile renames/moves a file
 func (s *GRPCServer) RenameFile(ctx context.Context, req *pb.RenameFileRequest) (*pb.RenameFileResponse, error) {
-	err := s.master.RenameFile(req.OldPath, req.NewPath)
+	err := s.master.RenameFile(req.OldPath, req.NewPath, req.Namespace)
 	if err != nil {
 		return &pb.RenameFileResponse{
 			Success: false,
@@ -177,16 +177,10 @@ func (s *GRPCServer) RenameFile(ctx context.Context, req *pb.RenameFileRequest) 
 
 // ListFiles returns all files in the namespace
 func (s *GRPCServer) ListFiles(ctx context.Context, req *pb.ListFilesRequest) (*pb.ListFilesResponse, error) {
-	files := s.master.ListFiles()
+	files := s.master.ListFiles(req.Namespace, req.Prefix)
 
 	protoFiles := make([]*pb.FileInfoResponse, 0, len(files))
 	for _, f := range files {
-		// Filter by prefix if specified
-		if req.Prefix != "" && len(f.Path) >= len(req.Prefix) {
-			if f.Path[:len(req.Prefix)] != req.Prefix {
-				continue
-			}
-		}
 		protoFiles = append(protoFiles, fileInfoToProto(f))
 	}
 
@@ -197,7 +191,7 @@ func (s *GRPCServer) ListFiles(ctx context.Context, req *pb.ListFilesRequest) (*
 
 // AllocateChunk allocates a new chunk for a file
 func (s *GRPCServer) AllocateChunk(ctx context.Context, req *pb.AllocateChunkRequest) (*pb.AllocateChunkResponse, error) {
-	chunkInfo, err := s.master.AddChunkToFile(req.Path)
+	chunkInfo, err := s.master.AddChunkToFile(req.Path, req.Namespace)
 	if err != nil {
 		return &pb.AllocateChunkResponse{
 			Success: false,
@@ -214,7 +208,7 @@ func (s *GRPCServer) AllocateChunk(ctx context.Context, req *pb.AllocateChunkReq
 
 // GetChunkLocations returns chunk locations for a file
 func (s *GRPCServer) GetChunkLocations(ctx context.Context, req *pb.GetChunkLocationsRequest) (*pb.GetChunkLocationsResponse, error) {
-	chunks, err := s.master.GetFileChunks(req.Path)
+	chunks, err := s.master.GetFileChunks(req.Path, req.Namespace)
 	if err != nil {
 		return &pb.GetChunkLocationsResponse{
 			Success: false,

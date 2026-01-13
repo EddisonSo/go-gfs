@@ -112,6 +112,7 @@ message CreateFileResponse {
 
 message GetFileRequest {
     string path = 1;
+    string namespace = 2;
 }
 
 message GetFileResponse {
@@ -122,6 +123,7 @@ message GetFileResponse {
 
 message DeleteFileRequest {
     string path = 1;
+    string namespace = 2;
 }
 
 message DeleteFileResponse {
@@ -132,6 +134,7 @@ message DeleteFileResponse {
 message RenameFileRequest {
     string old_path = 1;
     string new_path = 2;
+    string namespace = 3;
 }
 
 message RenameFileResponse {
@@ -141,6 +144,7 @@ message RenameFileResponse {
 
 message ListFilesRequest {
     string prefix = 1;  // Optional path prefix filter
+    string namespace = 2;
 }
 
 message ListFilesResponse {
@@ -150,6 +154,7 @@ message ListFilesResponse {
 // Request a new chunk for writing to a file
 message AllocateChunkRequest {
     string path = 1;
+    string namespace = 2;
 }
 
 message AllocateChunkResponse {
@@ -161,6 +166,7 @@ message AllocateChunkResponse {
 // Get chunk locations for reading
 message GetChunkLocationsRequest {
     string path = 1;
+    string namespace = 2;
 }
 
 message GetChunkLocationsResponse {

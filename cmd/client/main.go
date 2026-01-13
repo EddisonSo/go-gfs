@@ -335,14 +335,14 @@ func parseArgs(line string) []string {
 
 func printHelp() {
 	fmt.Println(`Commands:
-  ls                      List all files
-  read <path>             Read file to stdout
-  read <path> > <file>    Read file to local file
+  ls [--namespace <name>] [prefix]            List files
+  read [--namespace <name>] <path>            Read file to stdout
+  read [--namespace <name>] <path> > <file>   Read file to local file
   write [--namespace <name>] <path> <data>   Write data to file
   write [--namespace <name>] <path> < <file> Write local file to GFS
-  mv <src> <dst>          Rename/move a file
-  rm <path>               Delete a file
-  info <path>             Show file information
+  mv [--namespace <name>] <src> <dst>         Rename/move a file
+  rm [--namespace <name>] <path>              Delete a file
+  info [--namespace <name>] <path>            Show file information
   pressure                Show cluster resource pressure (CPU, memory, disk)
   help                    Show this help
   exit                    Quit the client`)
@@ -358,12 +358,18 @@ func cmdLs(args []string) {
 	ctx, cancel := getContext()
 	defer cancel()
 
-	prefix := ""
-	if len(args) > 0 {
-		prefix = args[0]
+	namespace, remaining, err := extractNamespace(args)
+	if err != nil {
+		fmt.Printf("Usage error: %v\n", err)
+		return
 	}
 
-	files, err := client.ListFiles(ctx, prefix)
+	prefix := ""
+	if len(remaining) > 0 {
+		prefix = remaining[0]
+	}
+
+	files, err := client.ListFilesWithNamespace(ctx, namespace, prefix)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
@@ -375,7 +381,11 @@ func cmdLs(args []string) {
 	}
 
 	for _, f := range files {
-		fmt.Printf("%s\t%d chunks\t%d bytes\n", f.Path, len(f.ChunkHandles), f.Size)
+		displayNamespace := f.Namespace
+		if displayNamespace == "" {
+			displayNamespace = gfs.DefaultNamespace
+		}
+		fmt.Printf("%s\t%s\t%d chunks\t%d bytes\n", displayNamespace, f.Path, len(f.ChunkHandles), f.Size)
 	}
 }
 
@@ -383,17 +393,27 @@ func cmdLs(args []string) {
 
 func cmdRead(args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: read <path> [> localfile]")
+		fmt.Println("Usage: read [--namespace <name>] <path> [> localfile]")
 		return
 	}
 
-	path := args[0]
+	namespace, remaining, err := extractNamespace(args)
+	if err != nil {
+		fmt.Printf("Usage error: %v\n", err)
+		return
+	}
+	if len(remaining) < 1 {
+		fmt.Println("Usage: read [--namespace <name>] <path> [> localfile]")
+		return
+	}
+
+	path := remaining[0]
 	var outputFile string
 
 	// Check for > redirect
-	for i, arg := range args {
-		if arg == ">" && i+1 < len(args) {
-			outputFile = args[i+1]
+	for i, arg := range remaining {
+		if arg == ">" && i+1 < len(remaining) {
+			outputFile = remaining[i+1]
 			break
 		}
 	}
@@ -403,7 +423,7 @@ func cmdRead(args []string) {
 
 	// Get file info for size (for progress bar)
 	var totalSize int64
-	if fileInfo, err := client.GetFile(ctx, path); err == nil {
+	if fileInfo, err := client.GetFileWithNamespace(ctx, path, namespace); err == nil {
 		totalSize = int64(fileInfo.Size)
 	}
 
@@ -433,7 +453,7 @@ func cmdRead(args []string) {
 	}
 
 	// Read using SDK
-	n, err := client.ReadTo(ctx, path, output)
+	n, err := client.ReadToWithNamespace(ctx, path, namespace, output)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
@@ -498,7 +518,7 @@ func cmdWrite(args []string) {
 			fmt.Println("No data to write")
 			return
 		}
-		n, err := client.Write(ctx, path, writeData)
+		n, err := client.WriteWithNamespace(ctx, path, namespace, writeData)
 		if err != nil {
 			fmt.Printf("Write failed: %v\n", err)
 			return
@@ -549,15 +569,24 @@ func writeFromFile(ctx context.Context, gfsPath, localPath, namespace string) (i
 
 func cmdRm(args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: rm <path>")
+		fmt.Println("Usage: rm [--namespace <name>] <path>")
 		return
 	}
-	path := args[0]
+	namespace, remaining, err := extractNamespace(args)
+	if err != nil {
+		fmt.Printf("Usage error: %v\n", err)
+		return
+	}
+	if len(remaining) < 1 {
+		fmt.Println("Usage: rm [--namespace <name>] <path>")
+		return
+	}
+	path := remaining[0]
 
 	ctx, cancel := getContext()
 	defer cancel()
 
-	if err := client.DeleteFile(ctx, path); err != nil {
+	if err := client.DeleteFileWithNamespace(ctx, path, namespace); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
@@ -569,16 +598,25 @@ func cmdRm(args []string) {
 
 func cmdMv(args []string) {
 	if len(args) < 2 {
-		fmt.Println("Usage: mv <source> <destination>")
+		fmt.Println("Usage: mv [--namespace <name>] <source> <destination>")
 		return
 	}
-	oldPath := args[0]
-	newPath := args[1]
+	namespace, remaining, err := extractNamespace(args)
+	if err != nil {
+		fmt.Printf("Usage error: %v\n", err)
+		return
+	}
+	if len(remaining) < 2 {
+		fmt.Println("Usage: mv [--namespace <name>] <source> <destination>")
+		return
+	}
+	oldPath := remaining[0]
+	newPath := remaining[1]
 
 	ctx, cancel := getContext()
 	defer cancel()
 
-	if err := client.RenameFile(ctx, oldPath, newPath); err != nil {
+	if err := client.RenameFileWithNamespace(ctx, oldPath, newPath, namespace); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
@@ -590,16 +628,25 @@ func cmdMv(args []string) {
 
 func cmdInfo(args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: info <path>")
+		fmt.Println("Usage: info [--namespace <name>] <path>")
 		return
 	}
-	path := args[0]
+	namespace, remaining, err := extractNamespace(args)
+	if err != nil {
+		fmt.Printf("Usage error: %v\n", err)
+		return
+	}
+	if len(remaining) < 1 {
+		fmt.Println("Usage: info [--namespace <name>] <path>")
+		return
+	}
+	path := remaining[0]
 
 	ctx, cancel := getContext()
 	defer cancel()
 
 	// Get file info
-	f, err := client.GetFile(ctx, path)
+	f, err := client.GetFileWithNamespace(ctx, path, namespace)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return
@@ -616,7 +663,7 @@ func cmdInfo(args []string) {
 	fmt.Printf("Chunks:     %d\n", len(f.ChunkHandles))
 
 	// Get chunk locations
-	chunks, err := client.GetChunkLocations(ctx, path)
+	chunks, err := client.GetChunkLocationsWithNamespace(ctx, path, namespace)
 	if err == nil && len(chunks) > 0 {
 		fmt.Println("\nChunk Details:")
 		for i, chunk := range chunks {

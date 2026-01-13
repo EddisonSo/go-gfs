@@ -38,18 +38,21 @@ type CreateFileData struct {
 
 // DeleteFileData represents data for DELETE_FILE operation
 type DeleteFileData struct {
-	Path string `json:"path"`
+	Path      string `json:"path"`
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // RenameFileData represents data for RENAME_FILE operation
 type RenameFileData struct {
-	OldPath string `json:"old_path"`
-	NewPath string `json:"new_path"`
+	OldPath   string `json:"old_path"`
+	NewPath   string `json:"new_path"`
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // AddChunkData represents data for ADD_CHUNK operation
 type AddChunkData struct {
 	Path        string `json:"path"`
+	Namespace   string `json:"namespace,omitempty"`
 	ChunkHandle string `json:"chunk_handle"`
 }
 
@@ -127,20 +130,20 @@ func (w *WAL) LogCreateFile(path, namespace string, chunkSize uint64) error {
 }
 
 // LogDeleteFile logs a DELETE_FILE operation
-func (w *WAL) LogDeleteFile(path string) error {
-	data, _ := json.Marshal(DeleteFileData{Path: path})
+func (w *WAL) LogDeleteFile(path, namespace string) error {
+	data, _ := json.Marshal(DeleteFileData{Path: path, Namespace: namespace})
 	return w.append(Entry{Op: OpDeleteFile, Data: data})
 }
 
 // LogRenameFile logs a RENAME_FILE operation
-func (w *WAL) LogRenameFile(oldPath, newPath string) error {
-	data, _ := json.Marshal(RenameFileData{OldPath: oldPath, NewPath: newPath})
+func (w *WAL) LogRenameFile(oldPath, newPath, namespace string) error {
+	data, _ := json.Marshal(RenameFileData{OldPath: oldPath, NewPath: newPath, Namespace: namespace})
 	return w.append(Entry{Op: OpRenameFile, Data: data})
 }
 
 // LogAddChunk logs an ADD_CHUNK operation
-func (w *WAL) LogAddChunk(path, chunkHandle string) error {
-	data, _ := json.Marshal(AddChunkData{Path: path, ChunkHandle: chunkHandle})
+func (w *WAL) LogAddChunk(path, namespace, chunkHandle string) error {
+	data, _ := json.Marshal(AddChunkData{Path: path, Namespace: namespace, ChunkHandle: chunkHandle})
 	return w.append(Entry{Op: OpAddChunk, Data: data})
 }
 
