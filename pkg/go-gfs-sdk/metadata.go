@@ -7,9 +7,27 @@ import (
 	pb "eddisonso.com/go-gfs/gen/master"
 )
 
+// DefaultNamespace is used when no namespace is provided.
+const DefaultNamespace = "default"
+
+func normalizeNamespace(namespace string) string {
+	if namespace == "" {
+		return DefaultNamespace
+	}
+	return namespace
+}
+
 // CreateFile creates a new file entry.
 func (c *Client) CreateFile(ctx context.Context, path string) (*pb.FileInfoResponse, error) {
-	resp, err := c.master.CreateFile(ctx, &pb.CreateFileRequest{Path: path})
+	return c.CreateFileWithNamespace(ctx, path, "")
+}
+
+// CreateFileWithNamespace creates a new file entry with a namespace.
+func (c *Client) CreateFileWithNamespace(ctx context.Context, path, namespace string) (*pb.FileInfoResponse, error) {
+	resp, err := c.master.CreateFile(ctx, &pb.CreateFileRequest{
+		Path:      path,
+		Namespace: normalizeNamespace(namespace),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -115,8 +133,13 @@ func (p *PreparedUpload) OnProgress(fn ProgressFunc) {
 // PrepareUpload pre-allocates chunks for a file of the given size.
 // This eliminates allocation delays during streaming uploads.
 func (c *Client) PrepareUpload(ctx context.Context, path string, size int64) (*PreparedUpload, error) {
+	return c.PrepareUploadWithNamespace(ctx, path, "", size)
+}
+
+// PrepareUploadWithNamespace pre-allocates chunks for a file of the given size with a namespace.
+func (c *Client) PrepareUploadWithNamespace(ctx context.Context, path, namespace string, size int64) (*PreparedUpload, error) {
 	// Create file if it doesn't exist
-	c.CreateFile(ctx, path)
+	c.CreateFileWithNamespace(ctx, path, namespace)
 
 	// Get existing chunks
 	existing, _ := c.GetChunkLocations(ctx, path)

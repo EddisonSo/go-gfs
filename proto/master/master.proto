@@ -32,6 +32,7 @@ message FileInfoResponse {
     repeated string chunk_handles = 2;
     uint64 size = 3;
     uint64 chunk_size = 4;
+    string namespace = 5;
 }
 
 // Resource metrics reported by chunkservers
@@ -100,6 +101,7 @@ message RenewLeaseResponse {
 
 message CreateFileRequest {
     string path = 1;
+    string namespace = 2;
 }
 
 message CreateFileResponse {

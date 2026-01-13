@@ -112,7 +112,7 @@ func (s *GRPCServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*
 
 // CreateFile creates a new file in the namespace
 func (s *GRPCServer) CreateFile(ctx context.Context, req *pb.CreateFileRequest) (*pb.CreateFileResponse, error) {
-	file, err := s.master.CreateFile(req.Path)
+	file, err := s.master.CreateFile(req.Path, req.Namespace)
 	if err != nil {
 		return &pb.CreateFileResponse{
 			Success: false,
@@ -287,11 +287,17 @@ func fileInfoToProto(f *FileInfo) *pb.FileInfoResponse {
 		handles[i] = string(h)
 	}
 
+	namespace := f.Namespace
+	if namespace == "" {
+		namespace = defaultNamespace
+	}
+
 	return &pb.FileInfoResponse{
 		Path:         f.Path,
 		ChunkHandles: handles,
 		Size:         f.Size,
 		ChunkSize:    f.ChunkSize,
+		Namespace:    namespace,
 	}
 }
 

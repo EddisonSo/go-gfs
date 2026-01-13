@@ -32,6 +32,7 @@ type Entry struct {
 // CreateFileData represents data for CREATE_FILE operation
 type CreateFileData struct {
 	Path      string `json:"path"`
+	Namespace string `json:"namespace,omitempty"`
 	ChunkSize uint64 `json:"chunk_size"`
 }
 
@@ -120,8 +121,8 @@ func (w *WAL) append(entry Entry) error {
 }
 
 // LogCreateFile logs a CREATE_FILE operation
-func (w *WAL) LogCreateFile(path string, chunkSize uint64) error {
-	data, _ := json.Marshal(CreateFileData{Path: path, ChunkSize: chunkSize})
+func (w *WAL) LogCreateFile(path, namespace string, chunkSize uint64) error {
+	data, _ := json.Marshal(CreateFileData{Path: path, Namespace: namespace, ChunkSize: chunkSize})
 	return w.append(Entry{Op: OpCreateFile, Data: data})
 }
 

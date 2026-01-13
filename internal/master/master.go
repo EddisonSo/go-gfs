@@ -55,6 +55,7 @@ const (
 
 // Lease duration for primary assignment
 const LeaseDuration = 60 * time.Second
+const defaultNamespace = "default"
 
 // ChunkInfo contains metadata about a chunk
 type ChunkInfo struct {
@@ -71,6 +72,7 @@ type ChunkInfo struct {
 // FileInfo contains metadata about a file
 type FileInfo struct {
 	Path       string
+	Namespace  string
 	Chunks     []ChunkHandle // Ordered list of chunk handles
 	Size       uint64        // Total file size in bytes
 	ChunkSize  uint64        // Size of each chunk (default 64MB)
@@ -162,7 +164,7 @@ func (m *Master) replayWAL(walPath string) error {
 				slog.Warn("failed to unmarshal CREATE_FILE", "error", err)
 				continue
 			}
-			m.replayCreateFile(data.Path, data.ChunkSize)
+			m.replayCreateFile(data.Path, data.Namespace, data.ChunkSize)
 
 		case wal.OpDeleteFile:
 			var data wal.DeleteFileData
@@ -206,10 +208,14 @@ func (m *Master) replayWAL(walPath string) error {
 }
 
 // replayCreateFile recreates a file from WAL (no WAL logging)
-func (m *Master) replayCreateFile(path string, chunkSize uint64) {
+func (m *Master) replayCreateFile(path, namespace string, chunkSize uint64) {
+	if namespace == "" {
+		namespace = defaultNamespace
+	}
 	now := time.Now()
 	m.files[path] = &FileInfo{
 		Path:       path,
+		Namespace:  namespace,
 		Chunks:     []ChunkHandle{},
 		Size:       0,
 		ChunkSize:  chunkSize,
@@ -439,7 +445,7 @@ func (m *Master) generateChunkHandle() ChunkHandle {
 }
 
 // CreateFile creates a new file in the namespace
-func (m *Master) CreateFile(path string) (*FileInfo, error) {
+func (m *Master) CreateFile(path, namespace string) (*FileInfo, error) {
 	m.fileMu.Lock()
 	defer m.fileMu.Unlock()
 
@@ -447,14 +453,19 @@ func (m *Master) CreateFile(path string) (*FileInfo, error) {
 		return nil, fmt.Errorf("file already exists: %s", path)
 	}
 
+	if namespace == "" {
+		namespace = defaultNamespace
+	}
+
 	// Log to WAL before applying
-	if err := m.wal.LogCreateFile(path, m.defaultChunkSize); err != nil {
+	if err := m.wal.LogCreateFile(path, namespace, m.defaultChunkSize); err != nil {
 		return nil, fmt.Errorf("WAL write failed: %w", err)
 	}
 
 	now := time.Now()
 	file := &FileInfo{
 		Path:       path,
+		Namespace:  namespace,
 		Chunks:     []ChunkHandle{},
 		Size:       0,
 		ChunkSize:  m.defaultChunkSize,

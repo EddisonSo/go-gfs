@@ -338,8 +338,8 @@ func printHelp() {
   ls                      List all files
   read <path>             Read file to stdout
   read <path> > <file>    Read file to local file
-  write <path> <data>     Write data to file
-  write <path> < <file>   Write local file to GFS
+  write [--namespace <name>] <path> <data>   Write data to file
+  write [--namespace <name>] <path> < <file> Write local file to GFS
   mv <src> <dst>          Rename/move a file
   rm <path>               Delete a file
   info <path>             Show file information
@@ -452,17 +452,27 @@ func cmdRead(args []string) {
 
 func cmdWrite(args []string) {
 	if len(args) < 1 {
-		fmt.Println("Usage: write <path> <data>  OR  write <path> < localfile")
+		fmt.Println("Usage: write [--namespace <name>] <path> <data>  OR  write [--namespace <name>] <path> < localfile")
 		return
 	}
 
-	path := args[0]
+	namespace, remaining, err := extractNamespace(args)
+	if err != nil {
+		fmt.Printf("Usage error: %v\n", err)
+		return
+	}
+	if len(remaining) < 1 {
+		fmt.Println("Usage: write [--namespace <name>] <path> <data>  OR  write [--namespace <name>] <path> < localfile")
+		return
+	}
+
+	path := remaining[0]
 
 	// Check for < redirect
 	inputFile := ""
-	for i, arg := range args {
-		if arg == "<" && i+1 < len(args) {
-			inputFile = args[i+1]
+	for i, arg := range remaining {
+		if arg == "<" && i+1 < len(remaining) {
+			inputFile = remaining[i+1]
 			break
 		}
 	}
@@ -471,19 +481,19 @@ func cmdWrite(args []string) {
 	defer cancel()
 
 	// Create file if it doesn't exist
-	client.CreateFile(ctx, path)
+	client.CreateFileWithNamespace(ctx, path, namespace)
 
 	if inputFile != "" {
 		// Stream from file using SDK
-		totalWritten, err := writeFromFile(ctx, path, inputFile)
+		totalWritten, err := writeFromFile(ctx, path, inputFile, namespace)
 		if err != nil {
 			fmt.Printf("Write failed: %v\n", err)
 			return
 		}
 		fmt.Printf("Wrote %d bytes to %s\n", totalWritten, path)
-	} else if len(args) > 1 && args[1] != "<" {
+	} else if len(remaining) > 1 && remaining[1] != "<" {
 		// Inline data (typically small)
-		writeData := []byte(strings.Join(args[1:], " "))
+		writeData := []byte(strings.Join(remaining[1:], " "))
 		if len(writeData) == 0 {
 			fmt.Println("No data to write")
 			return
@@ -495,13 +505,13 @@ func cmdWrite(args []string) {
 		}
 		fmt.Printf("Wrote %d bytes to %s\n", n, path)
 	} else {
-		fmt.Println("Usage: write <path> <data>  OR  write <path> < localfile")
+		fmt.Println("Usage: write [--namespace <name>] <path> <data>  OR  write [--namespace <name>] <path> < localfile")
 		return
 	}
 }
 
 // writeFromFile streams data from a local file to GFS using the SDK
-func writeFromFile(ctx context.Context, gfsPath, localPath string) (int64, error) {
+func writeFromFile(ctx context.Context, gfsPath, localPath, namespace string) (int64, error) {
 	file, err := os.Open(localPath)
 	if err != nil {
 		return 0, fmt.Errorf("failed to open file: %w", err)
@@ -516,7 +526,7 @@ func writeFromFile(ctx context.Context, gfsPath, localPath string) (int64, error
 	totalSize := stat.Size()
 
 	// Pre-allocate chunks to avoid delays during upload
-	prepared, err := client.PrepareUpload(ctx, gfsPath, totalSize)
+	prepared, err := client.PrepareUploadWithNamespace(ctx, gfsPath, namespace, totalSize)
 	if err != nil {
 		return 0, fmt.Errorf("failed to prepare upload: %w", err)
 	}
@@ -596,6 +606,11 @@ func cmdInfo(args []string) {
 	}
 
 	fmt.Printf("Path:       %s\n", f.Path)
+	namespace := f.Namespace
+	if namespace == "" {
+		namespace = gfs.DefaultNamespace
+	}
+	fmt.Printf("Namespace:  %s\n", namespace)
 	fmt.Printf("Size:       %d bytes\n", f.Size)
 	fmt.Printf("Chunk Size: %d bytes\n", f.ChunkSize)
 	fmt.Printf("Chunks:     %d\n", len(f.ChunkHandles))
@@ -616,6 +631,34 @@ func cmdInfo(args []string) {
 			}
 		}
 	}
+}
+
+func extractNamespace(args []string) (string, []string, error) {
+	var namespace string
+	remaining := make([]string, 0, len(args))
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--namespace" || arg == "-n" {
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("missing namespace value")
+			}
+			namespace = args[i+1]
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--namespace=") {
+			namespace = strings.TrimPrefix(arg, "--namespace=")
+			continue
+		}
+		if strings.HasPrefix(arg, "-n=") {
+			namespace = strings.TrimPrefix(arg, "-n=")
+			continue
+		}
+		remaining = append(remaining, arg)
+	}
+
+	return namespace, remaining, nil
 }
 
 // ============ pressure command ============
