@@ -40,7 +40,8 @@ jobs:
             -t ${MASTER_IMAGE}:${GITHUB_SHA}-${{ matrix.suffix }} \
             --cache-from type=gha \
             --cache-to type=gha,mode=max \
-            --push .
+            --load .
+          docker push ${MASTER_IMAGE}:${GITHUB_SHA}-${{ matrix.suffix }}
 
   build-chunkserver:
     strategy:
@@ -72,7 +73,8 @@ jobs:
             -t ${CHUNK_IMAGE}:${GITHUB_SHA}-${{ matrix.suffix }} \
             --cache-from type=gha \
             --cache-to type=gha,mode=max \
-            --push .
+            --load .
+          docker push ${CHUNK_IMAGE}:${GITHUB_SHA}-${{ matrix.suffix }}
 
   create-manifests:
     needs: [build-master, build-chunkserver]
