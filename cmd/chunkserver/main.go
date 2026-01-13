@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"eddisonso.com/go-gfs/internal/chunkserver"
+	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/masterclient"
 )
@@ -74,6 +75,10 @@ func main() {
 	<-sigChan
 
 	slog.Info("shutting down chunkserver")
+
+	// Abort all staged chunks and clean up staging data
+	chunkstagingtrackingservice.GetChunkStagingTrackingService().AbortAll()
+
 	if mc != nil {
 		mc.Close()
 	}

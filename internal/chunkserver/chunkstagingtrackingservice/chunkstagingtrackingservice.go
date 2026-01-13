@@ -44,6 +44,39 @@ func (csts *ChunkStagingTrackingService) GetStagedChunk(opId string) *stagedchun
 	return csts.stagedChunks[opId]
 }
 
+// AbortAll aborts all staged chunks and cleans up staging data.
+// Called during graceful shutdown.
+func (csts *ChunkStagingTrackingService) AbortAll() {
+	csts.mux.Lock()
+	defer csts.mux.Unlock()
+
+	aborted := 0
+
+	// Close all staged chunks
+	for opId, sc := range csts.stagedChunks {
+		sc.Close()
+		delete(csts.stagedChunks, opId)
+		aborted++
+	}
+
+	// Close all pending commits
+	for chunkHandle, pending := range csts.pendingCommits {
+		for seq, sc := range pending {
+			sc.Close()
+			delete(pending, seq)
+			aborted++
+		}
+		delete(csts.pendingCommits, chunkHandle)
+	}
+
+	// Clear sequence tracking
+	for k := range csts.nextExpectedSeq {
+		delete(csts.nextExpectedSeq, k)
+	}
+
+	slog.Info("aborted all staged chunks", "count", aborted)
+}
+
 // CommitInOrder commits the staged chunk if its sequence is the next expected.
 // If out of order, it buffers the commit for later.
 // Returns list of chunks that were committed (in order).
