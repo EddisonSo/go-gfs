@@ -19,7 +19,7 @@ ENV PATH="${PATH}:/go/bin"
 COPY . .
 
 # Generate unique build ID and timestamp at build time, save to file for labels
-RUN BUILD_ID=$(head -c 16 /dev/urandom | md5sum | head -c 8) && \
+RUN BUILD_ID=$(cat /proc/sys/kernel/random/uuid | tr -d '-' | head -c 8) && \
     BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S') && \
     echo "$BUILD_ID" > /tmp/build_id && \
     echo "$BUILD_TIME" > /tmp/build_time && \
