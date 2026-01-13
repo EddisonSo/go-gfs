@@ -194,43 +194,38 @@ func writeFromFile(client *gfs.Client, ctx context.Context, gfsPath, localPath, 
 
 func (a *App) cmdRm(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: rm [--namespace <name>] <path>")
+		return fmt.Errorf("usage: rm [--namespace <name>] <path>  (use * to delete all files in namespace)")
 	}
 	namespace, remaining, err := extractNamespace(args)
 	if err != nil {
 		return fmt.Errorf("usage error: %w", err)
 	}
 	if len(remaining) < 1 {
-		return fmt.Errorf("usage: rm [--namespace <name>] <path>")
+		return fmt.Errorf("usage: rm [--namespace <name>] <path>  (use * to delete all files in namespace)")
 	}
 	path := remaining[0]
 
 	ctx, cancel := getContext()
 	defer cancel()
 
+	// Handle wildcard to delete entire namespace
+	if path == "*" {
+		if namespace == "" || namespace == gfs.DefaultNamespace {
+			return fmt.Errorf("cannot delete all files in default namespace, specify --namespace")
+		}
+		count, err := a.client.DeleteNamespace(ctx, namespace)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Deleted %d files in namespace '%s'\n", count, namespace)
+		return nil
+	}
+
 	if err := a.client.DeleteFileWithNamespace(ctx, path, namespace); err != nil {
 		return err
 	}
 
 	fmt.Printf("Deleted %s\n", path)
-	return nil
-}
-
-func (a *App) cmdRmns(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: rmns <namespace>")
-	}
-	namespace := args[0]
-
-	ctx, cancel := getContext()
-	defer cancel()
-
-	count, err := a.client.DeleteNamespace(ctx, namespace)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Deleted namespace '%s' (%d files)\n", namespace, count)
 	return nil
 }
 
