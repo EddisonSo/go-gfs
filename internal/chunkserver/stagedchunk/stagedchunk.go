@@ -178,6 +178,42 @@ func (sc *StagedChunk) Commit() error {
 	chunkFilePath := filepath.Join(sc.storageDir, sc.ChunkHandle)
 	slog.Info("writing to file", "path", chunkFilePath)
 
+	var bytesWritten int64
+
+	// Optimization: rename temp file instead of copying for new chunks at offset 0
+	if sc.useFile && sc.Offset == 0 {
+		if sc.tempFile == nil {
+			return fmt.Errorf("temp file not initialized")
+		}
+
+		tempPath := sc.tempFile.Name()
+
+		// Check if chunk file exists
+		_, statErr := os.Stat(chunkFilePath)
+		chunkExists := statErr == nil
+
+		if !chunkExists {
+			// Fast path: rename temp file to chunk file
+			sc.tempFile.Sync() // Ensure temp file is flushed
+			sc.tempFile.Close()
+			sc.tempFile = nil
+
+			if err := os.Rename(tempPath, chunkFilePath); err != nil {
+				slog.Error("failed to rename temp file", "from", tempPath, "to", chunkFilePath, "error", err)
+				return fmt.Errorf("failed to rename temp file: %w", err)
+			}
+
+			bytesWritten = dataSize
+			slog.Info("renamed temp file to chunk file (fast path)", "bytes", bytesWritten)
+
+			sc.Status = csstructs.COMMIT
+			slog.Info("COMMIT SUCCESSFUL - renamed temp file", "opID", sc.OpId, "chunkHandle", sc.ChunkHandle, "file", chunkFilePath, "bytesWritten", bytesWritten)
+			return nil
+		}
+	}
+
+	// Slow path: copy data to chunk file (for random writes or existing chunks)
+
 	// Open or create the chunk file
 	file, err := os.OpenFile(chunkFilePath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -191,8 +227,6 @@ func (sc *StagedChunk) Commit() error {
 		slog.Error("failed to seek", "offset", sc.Offset, "error", err)
 		return fmt.Errorf("failed to seek to offset %d: %w", sc.Offset, err)
 	}
-
-	var bytesWritten int64
 
 	if sc.useFile {
 		// Stream from temp file to chunk file

@@ -9,7 +9,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const defaultChunkTimeout = 60 * time.Second
+const defaultChunkTimeout = 120 * time.Second
 const defaultMaxChunkSize = int64(64 << 20)
 const defaultReadConcurrency = 3
 
