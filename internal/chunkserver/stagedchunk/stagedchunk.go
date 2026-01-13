@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 )
@@ -32,6 +33,7 @@ type StagedChunk struct {
 	Status     csstructs.Status
 	ready      uint8
 	storageDir string
+	CreatedAt  time.Time
 }
 
 func NewStagedChunk(chunkHandle string, opId string, size uint64, offset uint64, sequence uint64, storageDir string) *StagedChunk {
@@ -44,6 +46,7 @@ func NewStagedChunk(chunkHandle string, opId string, size uint64, offset uint64,
 		Status:      csstructs.READY,
 		ready:       0,
 		storageDir:  storageDir,
+		CreatedAt:   time.Now(),
 	}
 
 	// Use temp file for large writes, memory buffer for small ones

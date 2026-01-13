@@ -3,9 +3,16 @@ package chunkstagingtrackingservice
 import (
 	"log/slog"
 	"sync"
+	"time"
 
 	"eddisonso.com/go-gfs/internal/chunkserver/stagedchunk"
 )
+
+// StagedChunkTTL is how long a staged chunk can remain uncommitted before expiring
+const StagedChunkTTL = 5 * time.Minute
+
+// CleanupInterval is how often to check for expired staged chunks
+const CleanupInterval = 30 * time.Second
 
 type ChunkStagingTrackingService struct {
 	stagedChunks map[string]*stagedchunk.StagedChunk // opId -> staged chunk
@@ -28,8 +35,75 @@ func GetChunkStagingTrackingService() *ChunkStagingTrackingService {
 			nextExpectedSeq: make(map[string]uint64),
 			pendingCommits:  make(map[string]map[uint64]*stagedchunk.StagedChunk),
 		}
+		// Start background cleanup goroutine
+		go instance.cleanupExpiredChunks()
 	})
 	return instance
+}
+
+// cleanupExpiredChunks periodically removes staged chunks that have exceeded TTL
+func (csts *ChunkStagingTrackingService) cleanupExpiredChunks() {
+	ticker := time.NewTicker(CleanupInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		csts.expireOldChunks()
+	}
+}
+
+// expireOldChunks removes staged chunks older than StagedChunkTTL
+func (csts *ChunkStagingTrackingService) expireOldChunks() {
+	csts.mux.Lock()
+	defer csts.mux.Unlock()
+
+	now := time.Now()
+	expired := 0
+
+	// Check main staged chunks
+	for opId, sc := range csts.stagedChunks {
+		age := now.Sub(sc.CreatedAt)
+		if age > StagedChunkTTL {
+			slog.Warn("staged chunk expired",
+				"opId", opId,
+				"chunkHandle", sc.ChunkHandle,
+				"age", age.Round(time.Second),
+				"ttl", StagedChunkTTL,
+				"size", sc.Cap(),
+				"offset", sc.Offset,
+				"sequence", sc.Sequence,
+			)
+			sc.Close()
+			delete(csts.stagedChunks, opId)
+			expired++
+		}
+	}
+
+	// Check pending commits
+	for chunkHandle, pending := range csts.pendingCommits {
+		for seq, sc := range pending {
+			age := now.Sub(sc.CreatedAt)
+			if age > StagedChunkTTL {
+				slog.Warn("pending commit expired",
+					"opId", sc.OpId,
+					"chunkHandle", chunkHandle,
+					"sequence", seq,
+					"age", age.Round(time.Second),
+					"ttl", StagedChunkTTL,
+				)
+				sc.Close()
+				delete(pending, seq)
+				expired++
+			}
+		}
+		// Clean up empty maps
+		if len(pending) == 0 {
+			delete(csts.pendingCommits, chunkHandle)
+		}
+	}
+
+	if expired > 0 {
+		slog.Info("expired staged chunks cleanup complete", "expired", expired)
+	}
 }
 
 func (csts *ChunkStagingTrackingService) AddStagedChunk(chunk *stagedchunk.StagedChunk) {
