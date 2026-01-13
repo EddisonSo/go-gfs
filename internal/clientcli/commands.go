@@ -95,7 +95,9 @@ func (a *App) cmdRead(args []string) error {
 		output = &ProgressWriter{w: output, progress: progress}
 	}
 
-	n, err := a.client.ReadToWithNamespace(ctx, path, namespace, output)
+	// Use background context for the actual download - each chunk has its own timeout
+	// This allows large file downloads to complete without an overall time limit
+	n, err := a.client.ReadToWithNamespace(context.Background(), path, namespace, output)
 	if err != nil {
 		return err
 	}
@@ -189,7 +191,9 @@ func writeFromFile(client *gfs.Client, ctx context.Context, gfsPath, localPath, 
 		reader = &ProgressReader{r: file, progress: progress}
 	}
 
-	return prepared.AppendFrom(ctx, reader)
+	// Use background context for the actual upload - each chunk has its own timeout
+	// This allows large file uploads to complete without an overall time limit
+	return prepared.AppendFrom(context.Background(), reader)
 }
 
 func (a *App) cmdRm(args []string) error {
