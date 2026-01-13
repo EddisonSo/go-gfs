@@ -2,12 +2,25 @@ package gfs
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	pb "eddisonso.com/go-gfs/gen/master"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+// fileKey identifies a file in the chunk cache.
+type fileKey struct {
+	namespace string
+	path      string
+}
+
+// chunkCache holds cached chunk locations for a single file.
+type chunkCache struct {
+	chunks []*pb.ChunkLocationInfo
+	mu     sync.RWMutex
+}
 
 const defaultChunkTimeout = 120 * time.Second
 const defaultMaxChunkSize = int64(64 << 20)
@@ -54,6 +67,7 @@ func New(ctx context.Context, masterAddr string, opts ...Option) (*Client, error
 		readConcurrency: cfg.readConcurrency,
 		secretProvider:  cfg.secretProvider,
 		replicaPicker:   cfg.replicaPicker,
+		chunkCache:      make(map[fileKey]*chunkCache),
 	}, nil
 }
 
@@ -67,6 +81,9 @@ type Client struct {
 	readConcurrency int
 	secretProvider  SecretProvider
 	replicaPicker   ReplicaPicker
+
+	chunkCacheMu sync.RWMutex
+	chunkCache   map[fileKey]*chunkCache
 }
 
 // Close releases the underlying gRPC connection.

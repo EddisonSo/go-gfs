@@ -64,9 +64,10 @@ func (c *Client) DeleteFile(ctx context.Context, path string) error {
 
 // DeleteFileWithNamespace removes a file entry in a namespace.
 func (c *Client) DeleteFileWithNamespace(ctx context.Context, path, namespace string) error {
+	ns := normalizeNamespace(namespace)
 	resp, err := c.master.DeleteFile(ctx, &pb.DeleteFileRequest{
 		Path:      path,
-		Namespace: normalizeNamespace(namespace),
+		Namespace: ns,
 	})
 	if err != nil {
 		return err
@@ -74,6 +75,7 @@ func (c *Client) DeleteFileWithNamespace(ctx context.Context, path, namespace st
 	if !resp.Success {
 		return fmt.Errorf("delete file failed: %s", resp.Message)
 	}
+	c.invalidateChunkCache(path, ns)
 	return nil
 }
 
@@ -88,6 +90,7 @@ func (c *Client) DeleteNamespace(ctx context.Context, namespace string) (int, er
 	if !resp.Success {
 		return 0, fmt.Errorf("delete namespace failed: %s", resp.Message)
 	}
+	c.invalidateNamespaceCache(namespace)
 	return int(resp.FilesDeleted), nil
 }
 

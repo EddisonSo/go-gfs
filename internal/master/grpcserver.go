@@ -309,6 +309,8 @@ func fileInfoToProto(f *FileInfo) *pb.FileInfoResponse {
 		Size:         f.Size,
 		ChunkSize:    f.ChunkSize,
 		Namespace:    namespace,
+		CreatedAt:    f.CreatedAt.Unix(),
+		ModifiedAt:   f.ModifiedAt.Unix(),
 	}
 }
 

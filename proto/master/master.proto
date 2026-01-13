@@ -33,6 +33,8 @@ message FileInfoResponse {
     uint64 size = 3;
     uint64 chunk_size = 4;
     string namespace = 5;
+    int64 created_at = 6;   // Unix timestamp (seconds)
+    int64 modified_at = 7;  // Unix timestamp (seconds)
 }
 
 // Resource metrics reported by chunkservers

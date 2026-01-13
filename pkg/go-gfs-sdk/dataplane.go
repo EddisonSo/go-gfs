@@ -41,14 +41,8 @@ func (c *Client) ReadTo(ctx context.Context, path string, w io.Writer) (int64, e
 	return c.ReadToWithNamespace(ctx, path, "", w)
 }
 
-// chunkWithIndex pairs a chunk with its original index for ordered output.
-type chunkWithIndex struct {
-	index int
-	chunk *pb.ChunkLocationInfo
-}
-
 // ReadToWithNamespace streams file contents to the provided writer with a namespace.
-// Chunks are grouped by chunkserver and read in batches to reduce connection overhead.
+// Chunks are read in parallel with automatic failover to replica servers.
 func (c *Client) ReadToWithNamespace(ctx context.Context, path, namespace string, w io.Writer) (int64, error) {
 	chunks, err := c.GetChunkLocationsWithNamespace(ctx, path, namespace)
 	if err != nil {
@@ -58,65 +52,36 @@ func (c *Client) ReadToWithNamespace(ctx context.Context, path, namespace string
 		return 0, ErrNoChunkLocations
 	}
 
-	// Group chunks by target chunkserver to batch reads
-	serverChunks := make(map[string][]chunkWithIndex)
-	serverReplicas := make(map[string]csstructs.ReplicaIdentifier)
-
-	for i, chunk := range chunks {
-		server := c.replicaPicker(chunk)
-		if server == nil {
-			continue
-		}
-		key := fmt.Sprintf("%s:%d", server.Hostname, server.DataPort)
-		serverChunks[key] = append(serverChunks[key], chunkWithIndex{index: i, chunk: chunk})
-		if _, exists := serverReplicas[key]; !exists {
-			serverReplicas[key] = csstructs.ReplicaIdentifier{
-				ID:              server.ServerId,
-				Hostname:        server.Hostname,
-				DataPort:        int(server.DataPort),
-				ReplicationPort: int(server.ReplicationPort),
-			}
-		}
-	}
-
-	// Process server batches with bounded concurrency
+	// Read chunks in parallel with bounded concurrency and failover
 	sem := make(chan struct{}, c.readConcurrency)
 	results := make(chan chunkReadResult, len(chunks))
 	var wg sync.WaitGroup
 
-	for serverKey, chunksForServer := range serverChunks {
+	for i, chunk := range chunks {
 		wg.Add(1)
-		go func(serverKey string, chunksForServer []chunkWithIndex) {
+		go func(index int, chunk *pb.ChunkLocationInfo) {
 			defer wg.Done()
 
-			// Acquire semaphore slot for this server batch
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				for _, cwi := range chunksForServer {
-					results <- chunkReadResult{index: cwi.index, err: ctx.Err()}
-				}
+				results <- chunkReadResult{index: index, err: ctx.Err()}
 				return
 			}
 
-			replica := serverReplicas[serverKey]
+			var buf bytes.Buffer
+			chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
+			_, err := c.readChunkWithFailover(chunkCtx, chunk, &buf)
+			cancel()
 
-			// Read all chunks from this server sequentially
-			for _, cwi := range chunksForServer {
-				var buf bytes.Buffer
-				chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
-				_, err := c.readChunk(chunkCtx, replica, cwi.chunk.ChunkHandle, &buf)
-				cancel()
-
-				if err != nil {
-					results <- chunkReadResult{index: cwi.index, err: fmt.Errorf("chunk %s: %w", cwi.chunk.ChunkHandle, err)}
-					continue
-				}
-
-				results <- chunkReadResult{index: cwi.index, data: buf.Bytes()}
+			if err != nil {
+				results <- chunkReadResult{index: index, err: err}
+				return
 			}
-		}(serverKey, chunksForServer)
+
+			results <- chunkReadResult{index: index, data: buf.Bytes()}
+		}(i, chunk)
 	}
 
 	// Close results channel when all goroutines complete
@@ -385,6 +350,9 @@ func (c *Client) appendData(ctx context.Context, path, namespace string, data []
 		}
 		writeCancel()
 
+		// Update cached chunk size after successful write
+		c.updateCachedChunkSize(path, namespace, chunk.ChunkHandle, uint64(writeSize))
+
 		total += writeSize
 	}
 
@@ -440,7 +408,7 @@ func (c *Client) writeAtData(ctx context.Context, path, namespace string, data [
 }
 
 func (c *Client) getChunkForAppend(ctx context.Context, path, namespace string) (*pb.ChunkLocationInfo, int64, error) {
-	chunks, err := c.GetChunkLocationsWithNamespace(ctx, path, namespace)
+	chunks, err := c.getCachedChunks(ctx, path, namespace)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -453,10 +421,12 @@ func (c *Client) getChunkForAppend(ctx context.Context, path, namespace string) 
 		}
 	}
 
+	// Allocate new chunk and add to cache
 	alloc, err := c.AllocateChunkWithNamespace(ctx, path, namespace)
 	if err != nil {
 		return nil, 0, err
 	}
+	c.appendCachedChunk(path, namespace, alloc)
 	return alloc, c.maxChunkSize, nil
 }
 
@@ -671,6 +641,66 @@ func dialWithContext(ctx context.Context, host string, port int) (net.Conn, erro
 	return dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, port))
 }
 
+// toReplicaIdentifier converts a ChunkServerInfo to a ReplicaIdentifier.
+func toReplicaIdentifier(s *pb.ChunkServerInfo) csstructs.ReplicaIdentifier {
+	return csstructs.ReplicaIdentifier{
+		ID:              s.ServerId,
+		Hostname:        s.Hostname,
+		DataPort:        int(s.DataPort),
+		ReplicationPort: int(s.ReplicationPort),
+	}
+}
+
+// buildReadTargets returns an ordered list of replicas to try for reading a chunk.
+// The preferred replica (from replicaPicker) is first, followed by other replicas.
+func (c *Client) buildReadTargets(chunk *pb.ChunkLocationInfo) []csstructs.ReplicaIdentifier {
+	preferred := c.replicaPicker(chunk)
+
+	var targets []csstructs.ReplicaIdentifier
+	seen := make(map[string]bool)
+
+	// Add preferred first
+	if preferred != nil {
+		targets = append(targets, toReplicaIdentifier(preferred))
+		seen[preferred.ServerId] = true
+	}
+
+	// Add remaining replicas from locations
+	for _, loc := range chunk.Locations {
+		if seen[loc.ServerId] {
+			continue
+		}
+		targets = append(targets, toReplicaIdentifier(loc))
+		seen[loc.ServerId] = true
+	}
+
+	// Add primary if not already included
+	if chunk.Primary != nil && !seen[chunk.Primary.ServerId] {
+		targets = append(targets, toReplicaIdentifier(chunk.Primary))
+	}
+
+	return targets
+}
+
+// readChunkWithFailover tries to read a chunk from each available replica until one succeeds.
+func (c *Client) readChunkWithFailover(ctx context.Context, chunk *pb.ChunkLocationInfo, w io.Writer) (int64, error) {
+	replicas := c.buildReadTargets(chunk)
+	if len(replicas) == 0 {
+		return 0, fmt.Errorf("no replicas available for chunk %s", chunk.ChunkHandle)
+	}
+
+	var lastErr error
+	for _, replica := range replicas {
+		n, err := c.readChunk(ctx, replica, chunk.ChunkHandle, w)
+		if err == nil {
+			return n, nil
+		}
+		lastErr = err
+	}
+
+	return 0, fmt.Errorf("all %d replicas failed for chunk %s: %w", len(replicas), chunk.ChunkHandle, lastErr)
+}
+
 func setDeadlineFromContext(ctx context.Context, conn net.Conn) error {
 	if deadline, ok := ctx.Deadline(); ok {
 		return conn.SetDeadline(deadline)
@@ -679,4 +709,93 @@ func setDeadlineFromContext(ctx context.Context, conn net.Conn) error {
 		return ctx.Err()
 	}
 	return nil
+}
+
+// getCachedChunks returns cached chunk locations or fetches from master if not cached.
+func (c *Client) getCachedChunks(ctx context.Context, path, namespace string) ([]*pb.ChunkLocationInfo, error) {
+	key := fileKey{namespace: namespace, path: path}
+
+	// Check cache first
+	c.chunkCacheMu.RLock()
+	cache, exists := c.chunkCache[key]
+	c.chunkCacheMu.RUnlock()
+
+	if exists {
+		cache.mu.RLock()
+		chunks := cache.chunks
+		cache.mu.RUnlock()
+		return chunks, nil
+	}
+
+	// Fetch from master
+	chunks, err := c.GetChunkLocationsWithNamespace(ctx, path, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store in cache
+	c.chunkCacheMu.Lock()
+	c.chunkCache[key] = &chunkCache{chunks: chunks}
+	c.chunkCacheMu.Unlock()
+
+	return chunks, nil
+}
+
+// updateCachedChunkSize updates the size of a cached chunk after a successful write.
+func (c *Client) updateCachedChunkSize(path, namespace, chunkHandle string, additionalBytes uint64) {
+	key := fileKey{namespace: namespace, path: path}
+
+	c.chunkCacheMu.RLock()
+	cache, exists := c.chunkCache[key]
+	c.chunkCacheMu.RUnlock()
+
+	if !exists {
+		return
+	}
+
+	cache.mu.Lock()
+	for _, chunk := range cache.chunks {
+		if chunk.ChunkHandle == chunkHandle {
+			chunk.Size += additionalBytes
+			break
+		}
+	}
+	cache.mu.Unlock()
+}
+
+// appendCachedChunk adds a newly allocated chunk to the cache.
+func (c *Client) appendCachedChunk(path, namespace string, chunk *pb.ChunkLocationInfo) {
+	key := fileKey{namespace: namespace, path: path}
+
+	c.chunkCacheMu.Lock()
+	cache, exists := c.chunkCache[key]
+	if !exists {
+		cache = &chunkCache{}
+		c.chunkCache[key] = cache
+	}
+	c.chunkCacheMu.Unlock()
+
+	cache.mu.Lock()
+	cache.chunks = append(cache.chunks, chunk)
+	cache.mu.Unlock()
+}
+
+// invalidateChunkCache removes cached chunks for a file.
+func (c *Client) invalidateChunkCache(path, namespace string) {
+	key := fileKey{namespace: namespace, path: path}
+
+	c.chunkCacheMu.Lock()
+	delete(c.chunkCache, key)
+	c.chunkCacheMu.Unlock()
+}
+
+// invalidateNamespaceCache removes all cached chunks for a namespace.
+func (c *Client) invalidateNamespaceCache(namespace string) {
+	c.chunkCacheMu.Lock()
+	for key := range c.chunkCache {
+		if key.namespace == namespace {
+			delete(c.chunkCache, key)
+		}
+	}
+	c.chunkCacheMu.Unlock()
 }
