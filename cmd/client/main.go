@@ -430,7 +430,6 @@ func cmdRead(args []string) {
 	// Set up output writer
 	var output io.Writer
 	var outFile *os.File
-	var err error
 	if outputFile != "" {
 		outFile, err = os.Create(outputFile)
 		if err != nil {
@@ -653,17 +652,17 @@ func cmdInfo(args []string) {
 	}
 
 	fmt.Printf("Path:       %s\n", f.Path)
-	namespace := f.Namespace
-	if namespace == "" {
-		namespace = gfs.DefaultNamespace
+	displayNamespace := f.Namespace
+	if displayNamespace == "" {
+		displayNamespace = gfs.DefaultNamespace
 	}
-	fmt.Printf("Namespace:  %s\n", namespace)
+	fmt.Printf("Namespace:  %s\n", displayNamespace)
 	fmt.Printf("Size:       %d bytes\n", f.Size)
 	fmt.Printf("Chunk Size: %d bytes\n", f.ChunkSize)
 	fmt.Printf("Chunks:     %d\n", len(f.ChunkHandles))
 
 	// Get chunk locations
-	chunks, err := client.GetChunkLocationsWithNamespace(ctx, path, namespace)
+	chunks, err := client.GetChunkLocationsWithNamespace(ctx, path, displayNamespace)
 	if err == nil && len(chunks) > 0 {
 		fmt.Println("\nChunk Details:")
 		for i, chunk := range chunks {
