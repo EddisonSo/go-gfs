@@ -96,6 +96,10 @@ type Master struct {
 	pendingDeletes   map[ChunkServerID][]ChunkHandle
 	pendingDeletesMu sync.Mutex
 
+	// Orphaned chunk tracking: serverID:handle -> first seen time
+	orphanedChunks   map[string]time.Time
+	orphanedChunksMu sync.Mutex
+
 	// Configuration
 	defaultChunkSize  uint64
 	replicationFactor int
@@ -111,6 +115,7 @@ func NewMaster(walPath string) (*Master, error) {
 		chunks:            make(map[ChunkHandle]*ChunkInfo),
 		chunkservers:      make(map[ChunkServerID]*ChunkLocation),
 		pendingDeletes:    make(map[ChunkServerID][]ChunkHandle),
+		orphanedChunks:    make(map[string]time.Time),
 		defaultChunkSize:  64 << 20, // 64MB
 		replicationFactor: 3,
 	}
@@ -759,7 +764,7 @@ func (m *Master) RenewLease(handle ChunkHandle, serverID ChunkServerID) bool {
 // ReportChunk is called by chunkservers to report they have a chunk
 func (m *Master) ReportChunk(serverID ChunkServerID, handle ChunkHandle) {
 	m.csMu.RLock()
-	serverLoc, exists := m.chunkservers[serverID]
+	_, exists := m.chunkservers[serverID]
 	m.csMu.RUnlock()
 
 	if !exists {
@@ -767,13 +772,28 @@ func (m *Master) ReportChunk(serverID ChunkServerID, handle ChunkHandle) {
 		return
 	}
 
+	m.chunkMu.RLock()
+	chunk, chunkExists := m.chunks[handle]
+	m.chunkMu.RUnlock()
+
+	if !chunkExists {
+		// Chunk not in master's records - track as orphaned
+		m.handleOrphanedChunk(serverID, handle)
+		return
+	}
+
+	// Clear from orphaned tracking if it was previously unknown but now exists
+	orphanKey := string(serverID) + ":" + string(handle)
+	m.orphanedChunksMu.Lock()
+	delete(m.orphanedChunks, orphanKey)
+	m.orphanedChunksMu.Unlock()
+
 	m.chunkMu.Lock()
 	defer m.chunkMu.Unlock()
 
-	chunk, exists := m.chunks[handle]
+	// Re-check after acquiring write lock
+	chunk, exists = m.chunks[handle]
 	if !exists {
-		// Chunk not in master's records - could be stale or orphaned
-		slog.Warn("chunk report for unknown chunk", "serverID", serverID, "handle", handle)
 		return
 	}
 
@@ -785,8 +805,51 @@ func (m *Master) ReportChunk(serverID ChunkServerID, handle ChunkHandle) {
 	}
 
 	// Add this server to the chunk's location list
-	chunk.Locations = append(chunk.Locations, *serverLoc)
-	slog.Info("added chunk location", "handle", handle, "serverID", serverID)
+	m.csMu.RLock()
+	serverLoc := m.chunkservers[serverID]
+	m.csMu.RUnlock()
+	if serverLoc != nil {
+		chunk.Locations = append(chunk.Locations, *serverLoc)
+		slog.Info("added chunk location", "handle", handle, "serverID", serverID)
+	}
+}
+
+// handleOrphanedChunk tracks unknown chunks and schedules deletion after grace period
+func (m *Master) handleOrphanedChunk(serverID ChunkServerID, handle ChunkHandle) {
+	orphanKey := string(serverID) + ":" + string(handle)
+	gracePeriod := 1 * time.Hour
+
+	m.orphanedChunksMu.Lock()
+	defer m.orphanedChunksMu.Unlock()
+
+	firstSeen, tracked := m.orphanedChunks[orphanKey]
+	if !tracked {
+		// First time seeing this orphaned chunk, start tracking
+		m.orphanedChunks[orphanKey] = time.Now()
+		slog.Warn("orphaned chunk detected, will delete after grace period",
+			"serverID", serverID, "handle", handle, "gracePeriod", gracePeriod)
+		return
+	}
+
+	// Check if grace period has passed
+	if time.Since(firstSeen) < gracePeriod {
+		slog.Debug("orphaned chunk still in grace period",
+			"serverID", serverID, "handle", handle,
+			"remaining", gracePeriod-time.Since(firstSeen))
+		return
+	}
+
+	// Grace period passed, schedule for deletion
+	slog.Info("scheduling orphaned chunk for deletion",
+		"serverID", serverID, "handle", handle,
+		"orphanedFor", time.Since(firstSeen))
+
+	m.pendingDeletesMu.Lock()
+	m.pendingDeletes[serverID] = append(m.pendingDeletes[serverID], handle)
+	m.pendingDeletesMu.Unlock()
+
+	// Remove from orphan tracking
+	delete(m.orphanedChunks, orphanKey)
 }
 
 // ConfirmChunkCommit is called by chunkserver after successful 2PC commit
