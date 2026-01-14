@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	pb "eddisonso.com/go-gfs/gen/master"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
@@ -284,7 +286,41 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 		chunkData := remaining[:writeSize]
 		remaining = remaining[writeSize:]
 
-		primary, replicas, err := c.buildWriteTargets(chunk)
+		// Retry loop for transient ErrNoPrimary (when chunkservers haven't registered yet)
+		const maxRetries = 5
+		var primary csstructs.ReplicaIdentifier
+		var replicas []csstructs.ReplicaIdentifier
+		var err error
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			primary, replicas, err = c.buildWriteTargets(chunk)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, ErrNoPrimary) {
+				return total, err
+			}
+			// Primary not assigned yet - wait and retry with backoff
+			backoff := time.Duration(1<<attempt) * 100 * time.Millisecond
+			if backoff > 2*time.Second {
+				backoff = 2 * time.Second
+			}
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return total, ctx.Err()
+			}
+			// Re-fetch chunk info from master
+			chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
+			refreshedChunks, refreshErr := c.GetChunkLocationsWithNamespace(chunkCtx, p.path, p.namespace)
+			cancel()
+			if refreshErr != nil {
+				return total, refreshErr
+			}
+			if p.index < len(refreshedChunks) {
+				chunk = refreshedChunks[p.index]
+				p.chunks[p.index] = chunk
+			}
+		}
 		if err != nil {
 			return total, err
 		}
@@ -338,7 +374,37 @@ func (c *Client) appendData(ctx context.Context, path, namespace string, data []
 		chunkData := remaining[:writeSize]
 		remaining = remaining[writeSize:]
 
-		primary, replicas, err := c.buildWriteTargets(chunk)
+		// Retry loop for transient ErrNoPrimary (when chunkservers haven't registered yet)
+		const maxRetries = 5
+		var primary csstructs.ReplicaIdentifier
+		var replicas []csstructs.ReplicaIdentifier
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			primary, replicas, err = c.buildWriteTargets(chunk)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, ErrNoPrimary) {
+				return total, err
+			}
+			// Primary not assigned yet - invalidate cache and retry with backoff
+			c.invalidateChunkCache(path, namespace)
+			backoff := time.Duration(1<<attempt) * 100 * time.Millisecond
+			if backoff > 2*time.Second {
+				backoff = 2 * time.Second
+			}
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return total, ctx.Err()
+			}
+			// Re-fetch chunk info
+			chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
+			chunk, _, err = c.getChunkForAppend(chunkCtx, path, namespace)
+			cancel()
+			if err != nil {
+				return total, err
+			}
+		}
 		if err != nil {
 			return total, err
 		}
@@ -388,7 +454,37 @@ func (c *Client) writeAtData(ctx context.Context, path, namespace string, data [
 		chunkData := remaining[:writeSize]
 		remaining = remaining[writeSize:]
 
-		primary, replicas, err := c.buildWriteTargets(chunk)
+		// Retry loop for transient ErrNoPrimary (when chunkservers haven't registered yet)
+		const maxRetries = 5
+		var primary csstructs.ReplicaIdentifier
+		var replicas []csstructs.ReplicaIdentifier
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			primary, replicas, err = c.buildWriteTargets(chunk)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, ErrNoPrimary) {
+				return total, err
+			}
+			// Primary not assigned yet - invalidate cache and retry with backoff
+			c.invalidateChunkCache(path, namespace)
+			backoff := time.Duration(1<<attempt) * 100 * time.Millisecond
+			if backoff > 2*time.Second {
+				backoff = 2 * time.Second
+			}
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return total, ctx.Err()
+			}
+			// Re-fetch chunk info
+			chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
+			chunk, err = c.getChunkByIndex(chunkCtx, path, namespace, chunkIndex)
+			cancel()
+			if err != nil {
+				return total, err
+			}
+		}
 		if err != nil {
 			return total, err
 		}

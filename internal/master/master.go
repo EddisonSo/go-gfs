@@ -861,6 +861,13 @@ func (m *Master) ReportChunk(serverID ChunkServerID, handle ChunkHandle) {
 	if serverLoc != nil {
 		chunk.Locations = append(chunk.Locations, *serverLoc)
 		slog.Info("added chunk location", "handle", handle, "serverID", serverID)
+
+		// If chunk has no primary, assign this server as primary
+		if chunk.Primary == nil {
+			chunk.Primary = serverLoc
+			chunk.LeaseExpiration = time.Now().Add(LeaseDuration)
+			slog.Info("assigned primary from reported location", "handle", handle, "primary", serverID)
+		}
 	}
 }
 
