@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -360,7 +361,28 @@ func (c *Client) appendData(ctx context.Context, path, namespace string, data []
 		chunk, spaceAvailable, err := c.getChunkForAppend(chunkCtx, path, namespace)
 		cancel()
 		if err != nil {
-			return total, err
+			// Auto-create file if it doesn't exist
+			if strings.Contains(err.Error(), "file not found") && !c.isFileKnown(path, namespace) {
+				if _, createErr := c.CreateFileWithNamespace(ctx, path, namespace); createErr != nil {
+					// If file already exists (race condition), that's fine
+					if !strings.Contains(createErr.Error(), "already exists") {
+						return total, fmt.Errorf("failed to create file: %w", createErr)
+					}
+				}
+				c.markFileKnown(path, namespace)
+				// Retry getting chunk after creating file
+				chunkCtx, cancel = context.WithTimeout(ctx, c.chunkTimeout)
+				chunk, spaceAvailable, err = c.getChunkForAppend(chunkCtx, path, namespace)
+				cancel()
+				if err != nil {
+					return total, err
+				}
+			} else {
+				return total, err
+			}
+		} else {
+			// File exists, mark as known for future appends
+			c.markFileKnown(path, namespace)
 		}
 		if spaceAvailable <= 0 {
 			return total, fmt.Errorf("no space available in chunk")

@@ -76,6 +76,7 @@ func (c *Client) DeleteFileWithNamespace(ctx context.Context, path, namespace st
 		return fmt.Errorf("delete file failed: %s", resp.Message)
 	}
 	c.invalidateChunkCache(path, ns)
+	c.forgetFile(path, ns)
 	return nil
 }
 
@@ -91,6 +92,7 @@ func (c *Client) DeleteNamespace(ctx context.Context, namespace string) (int, er
 		return 0, fmt.Errorf("delete namespace failed: %s", resp.Message)
 	}
 	c.invalidateNamespaceCache(namespace)
+	c.forgetNamespace(namespace)
 	return int(resp.FilesDeleted), nil
 }
 

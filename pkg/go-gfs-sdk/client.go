@@ -68,6 +68,7 @@ func New(ctx context.Context, masterAddr string, opts ...Option) (*Client, error
 		secretProvider:  cfg.secretProvider,
 		replicaPicker:   cfg.replicaPicker,
 		chunkCache:      make(map[fileKey]*chunkCache),
+		knownFiles:      make(map[fileKey]struct{}),
 	}, nil
 }
 
@@ -84,6 +85,10 @@ type Client struct {
 
 	chunkCacheMu sync.RWMutex
 	chunkCache   map[fileKey]*chunkCache
+
+	// Cache of files known to exist (successfully created or appended to)
+	knownFilesMu sync.RWMutex
+	knownFiles   map[fileKey]struct{}
 }
 
 // Close releases the underlying gRPC connection.
@@ -140,4 +145,40 @@ func WithReadConcurrency(n int) Option {
 			cfg.readConcurrency = n
 		}
 	}
+}
+
+// isFileKnown checks if a file is in the known files cache.
+func (c *Client) isFileKnown(path, namespace string) bool {
+	key := fileKey{namespace: namespace, path: path}
+	c.knownFilesMu.RLock()
+	_, exists := c.knownFiles[key]
+	c.knownFilesMu.RUnlock()
+	return exists
+}
+
+// markFileKnown adds a file to the known files cache.
+func (c *Client) markFileKnown(path, namespace string) {
+	key := fileKey{namespace: namespace, path: path}
+	c.knownFilesMu.Lock()
+	c.knownFiles[key] = struct{}{}
+	c.knownFilesMu.Unlock()
+}
+
+// forgetFile removes a file from the known files cache (e.g., after deletion).
+func (c *Client) forgetFile(path, namespace string) {
+	key := fileKey{namespace: namespace, path: path}
+	c.knownFilesMu.Lock()
+	delete(c.knownFiles, key)
+	c.knownFilesMu.Unlock()
+}
+
+// forgetNamespace removes all files in a namespace from the known files cache.
+func (c *Client) forgetNamespace(namespace string) {
+	c.knownFilesMu.Lock()
+	for key := range c.knownFiles {
+		if key.namespace == namespace {
+			delete(c.knownFiles, key)
+		}
+	}
+	c.knownFilesMu.Unlock()
 }
