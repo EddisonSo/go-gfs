@@ -30,7 +30,7 @@ func main() {
 	// Initialize logger
 	if *logServiceAddr != "" {
 		logger := gfslog.NewLogger(gfslog.Config{
-			Source:         "chunkserver",
+			Source:         *id,
 			LogServiceAddr: *logServiceAddr,
 			MinLevel:       slog.LevelDebug,
 		})
