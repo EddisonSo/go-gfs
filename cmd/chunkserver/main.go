@@ -12,11 +12,10 @@ import (
 	"eddisonso.com/go-gfs/internal/chunkserver/chunkstagingtrackingservice"
 	"eddisonso.com/go-gfs/internal/chunkserver/csstructs"
 	"eddisonso.com/go-gfs/internal/chunkserver/masterclient"
+	"eddisonso.com/go-gfs/pkg/gfslog"
 )
 
 func main() {
-	slog.Info("starting chunkserver")
-
 	dataPort := flag.Int("p", 8080, "Port for the chunk server to listen on")
 	replicationPort := flag.Int("r", 8081, "Port for the chunk server replication service")
 	hostname := flag.String("h", "localhost", "Hostname for the chunk server")
@@ -24,8 +23,22 @@ func main() {
 	id := flag.String("id", "chunkserver-1", "Chunk server ID")
 	masterAddr := flag.String("master", "", "Master server address (e.g., localhost:9000). If empty, runs standalone.")
 	heartbeatInterval := flag.Duration("heartbeat", 10*time.Second, "Heartbeat interval to master")
+	logServiceAddr := flag.String("log-service", "", "Log service address (e.g., log-service:50051)")
 
 	flag.Parse()
+
+	// Initialize logger
+	if *logServiceAddr != "" {
+		logger := gfslog.NewLogger(gfslog.Config{
+			Source:         "chunkserver",
+			LogServiceAddr: *logServiceAddr,
+			MinLevel:       slog.LevelDebug,
+		})
+		slog.SetDefault(logger.Logger)
+		defer logger.Close()
+	}
+
+	slog.Info("starting chunkserver")
 
 	config := csstructs.ChunkServerConfig{
 		Hostname:        *hostname,

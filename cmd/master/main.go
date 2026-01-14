@@ -12,21 +12,35 @@ import (
 
 	pb "eddisonso.com/go-gfs/gen/master"
 	"eddisonso.com/go-gfs/internal/master"
+	"eddisonso.com/go-gfs/pkg/gfslog"
 	"google.golang.org/grpc"
 )
 
 var (
-	port    int
-	dataDir string
+	port           int
+	dataDir        string
+	logServiceAddr string
 )
 
 func init() {
 	flag.IntVar(&port, "port", 9000, "Master server port")
 	flag.StringVar(&dataDir, "data", "/data/master", "Data directory for WAL")
+	flag.StringVar(&logServiceAddr, "log-service", "", "Log service address (e.g., log-service:50051)")
 }
 
 func main() {
 	flag.Parse()
+
+	// Initialize logger
+	if logServiceAddr != "" {
+		logger := gfslog.NewLogger(gfslog.Config{
+			Source:         "master",
+			LogServiceAddr: logServiceAddr,
+			MinLevel:       slog.LevelDebug,
+		})
+		slog.SetDefault(logger.Logger)
+		defer logger.Close()
+	}
 
 	slog.Info("starting master server", "port", port, "dataDir", dataDir)
 
