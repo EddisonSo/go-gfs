@@ -138,7 +138,15 @@ func NewMaster(walPath string) (*Master, error) {
 	}
 	m.wal = w
 
-	// Replay WAL to restore state
+	// Load snapshot first (if exists)
+	snapshot, err := w.ReadSnapshot()
+	if err != nil {
+		slog.Warn("failed to read snapshot, starting fresh", "error", err)
+	} else if snapshot != nil {
+		m.RestoreFromSnapshot(snapshot)
+	}
+
+	// Replay WAL entries after snapshot
 	if err := m.replayWAL(walPath); err != nil {
 		return nil, fmt.Errorf("failed to replay WAL: %w", err)
 	}
@@ -317,6 +325,153 @@ func (m *Master) replayCommitChunk(chunkHandle string, size uint64) {
 			file.Size = totalSize
 		}
 	}
+}
+
+// CreateSnapshot creates a point-in-time snapshot of the master state
+func (m *Master) CreateSnapshot() *wal.Snapshot {
+	m.fileMu.RLock()
+	m.chunkMu.RLock()
+	defer m.fileMu.RUnlock()
+	defer m.chunkMu.RUnlock()
+
+	snapshot := &wal.Snapshot{
+		Timestamp: time.Now(),
+		Files:     make([]wal.SnapshotFile, 0, len(m.files)),
+		Chunks:    make([]wal.SnapshotChunk, 0, len(m.chunks)),
+	}
+
+	// Export files
+	for _, file := range m.files {
+		chunks := make([]string, len(file.Chunks))
+		for i, h := range file.Chunks {
+			chunks[i] = string(h)
+		}
+		snapshot.Files = append(snapshot.Files, wal.SnapshotFile{
+			Path:       file.Path,
+			Namespace:  file.Namespace,
+			ChunkSize:  file.ChunkSize,
+			Chunks:     chunks,
+			Size:       file.Size,
+			CreatedAt:  file.CreatedAt.Unix(),
+			ModifiedAt: file.ModifiedAt.Unix(),
+		})
+	}
+
+	// Export chunks
+	for _, chunk := range m.chunks {
+		status := "pending"
+		if chunk.Status == ChunkCommitted {
+			status = "committed"
+		}
+		snapshot.Chunks = append(snapshot.Chunks, wal.SnapshotChunk{
+			Handle:    string(chunk.Handle),
+			FilePath:  chunk.FilePath,
+			Namespace: chunk.Namespace,
+			Size:      chunk.Size,
+			Version:   chunk.Version,
+			Status:    status,
+		})
+	}
+
+	return snapshot
+}
+
+// RestoreFromSnapshot restores master state from a snapshot
+func (m *Master) RestoreFromSnapshot(snapshot *wal.Snapshot) {
+	m.fileMu.Lock()
+	m.chunkMu.Lock()
+	defer m.fileMu.Unlock()
+	defer m.chunkMu.Unlock()
+
+	// Clear existing state
+	m.files = make(map[fileKey]*FileInfo)
+	m.chunks = make(map[ChunkHandle]*ChunkInfo)
+
+	// Restore files
+	for _, sf := range snapshot.Files {
+		chunks := make([]ChunkHandle, len(sf.Chunks))
+		for i, h := range sf.Chunks {
+			chunks[i] = ChunkHandle(h)
+		}
+		key := makeFileKey(sf.Namespace, sf.Path)
+		m.files[key] = &FileInfo{
+			Path:       sf.Path,
+			Namespace:  sf.Namespace,
+			Chunks:     chunks,
+			Size:       sf.Size,
+			ChunkSize:  sf.ChunkSize,
+			CreatedAt:  time.Unix(sf.CreatedAt, 0),
+			ModifiedAt: time.Unix(sf.ModifiedAt, 0),
+		}
+	}
+
+	// Restore chunks
+	for _, sc := range snapshot.Chunks {
+		status := ChunkPending
+		if sc.Status == "committed" {
+			status = ChunkCommitted
+		}
+		m.chunks[ChunkHandle(sc.Handle)] = &ChunkInfo{
+			Handle:    ChunkHandle(sc.Handle),
+			FilePath:  sc.FilePath,
+			Namespace: sc.Namespace,
+			Size:      sc.Size,
+			Version:   sc.Version,
+			Status:    status,
+			Locations: []ChunkLocation{}, // Will be populated by chunkserver heartbeats
+		}
+	}
+
+	slog.Info("restored from snapshot", "timestamp", snapshot.Timestamp, "files", len(m.files), "chunks", len(m.chunks))
+}
+
+// TakeSnapshot creates a snapshot and truncates the WAL
+func (m *Master) TakeSnapshot() error {
+	snapshot := m.CreateSnapshot()
+
+	if err := m.wal.WriteSnapshot(snapshot); err != nil {
+		return fmt.Errorf("failed to write snapshot: %w", err)
+	}
+
+	if err := m.wal.TruncateAfterSnapshot(); err != nil {
+		return fmt.Errorf("failed to truncate WAL: %w", err)
+	}
+
+	return nil
+}
+
+// StartPeriodicSnapshots starts a goroutine that takes snapshots periodically
+// Takes a snapshot every interval or when WAL exceeds maxEntries (whichever comes first)
+func (m *Master) StartPeriodicSnapshots(interval time.Duration, maxEntries int, stop <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stop:
+				slog.Info("stopping periodic snapshots")
+				return
+			case <-ticker.C:
+				// Check if snapshot is needed based on WAL size
+				count, err := m.wal.EntryCount()
+				if err != nil {
+					slog.Warn("failed to get WAL entry count", "error", err)
+					continue
+				}
+
+				if count >= maxEntries {
+					slog.Info("taking snapshot due to WAL size", "entries", count, "max", maxEntries)
+					if err := m.TakeSnapshot(); err != nil {
+						slog.Error("failed to take periodic snapshot", "error", err)
+					}
+				} else {
+					slog.Debug("WAL size within limits", "entries", count, "max", maxEntries)
+				}
+			}
+		}
+	}()
+	slog.Info("started periodic snapshots", "interval", interval, "maxEntries", maxEntries)
 }
 
 // Close closes the master and its WAL

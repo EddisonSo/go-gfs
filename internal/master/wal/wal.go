@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // OpType represents the type of operation in the WAL
@@ -227,4 +228,128 @@ func (r *Reader) ReadAll() ([]Entry, error) {
 	}
 
 	return entries, nil
+}
+
+// Snapshot represents a point-in-time snapshot of master state
+type Snapshot struct {
+	Timestamp time.Time       `json:"timestamp"`
+	Files     []SnapshotFile  `json:"files"`
+	Chunks    []SnapshotChunk `json:"chunks"`
+}
+
+// SnapshotFile represents a file in the snapshot
+type SnapshotFile struct {
+	Path       string   `json:"path"`
+	Namespace  string   `json:"namespace"`
+	ChunkSize  uint64   `json:"chunk_size"`
+	Chunks     []string `json:"chunks"`
+	Size       uint64   `json:"size"`
+	CreatedAt  int64    `json:"created_at"`
+	ModifiedAt int64    `json:"modified_at"`
+}
+
+// SnapshotChunk represents a chunk in the snapshot
+type SnapshotChunk struct {
+	Handle    string `json:"handle"`
+	FilePath  string `json:"file_path"`
+	Namespace string `json:"namespace"`
+	Size      uint64 `json:"size"`
+	Version   uint64 `json:"version"`
+	Status    string `json:"status"`
+}
+
+// WriteSnapshot writes a snapshot to disk
+func (w *WAL) WriteSnapshot(snapshot *Snapshot) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	snapshotPath := w.path + ".snapshot"
+	tempPath := snapshotPath + ".tmp"
+
+	// Write to temp file first
+	file, err := os.Create(tempPath)
+	if err != nil {
+		return fmt.Errorf("failed to create snapshot file: %w", err)
+	}
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(snapshot); err != nil {
+		file.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to encode snapshot: %w", err)
+	}
+
+	if err := file.Sync(); err != nil {
+		file.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to sync snapshot: %w", err)
+	}
+	file.Close()
+
+	// Atomic rename
+	if err := os.Rename(tempPath, snapshotPath); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to rename snapshot: %w", err)
+	}
+
+	slog.Info("snapshot written", "path", snapshotPath, "files", len(snapshot.Files), "chunks", len(snapshot.Chunks))
+	return nil
+}
+
+// ReadSnapshot reads a snapshot from disk
+func (w *WAL) ReadSnapshot() (*Snapshot, error) {
+	snapshotPath := w.path + ".snapshot"
+
+	file, err := os.Open(snapshotPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // No snapshot exists
+		}
+		return nil, fmt.Errorf("failed to open snapshot: %w", err)
+	}
+	defer file.Close()
+
+	var snapshot Snapshot
+	if err := json.NewDecoder(file).Decode(&snapshot); err != nil {
+		return nil, fmt.Errorf("failed to decode snapshot: %w", err)
+	}
+
+	slog.Info("snapshot loaded", "timestamp", snapshot.Timestamp, "files", len(snapshot.Files), "chunks", len(snapshot.Chunks))
+	return &snapshot, nil
+}
+
+// TruncateAfterSnapshot truncates the WAL after a successful snapshot
+func (w *WAL) TruncateAfterSnapshot() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Close current file
+	if err := w.file.Close(); err != nil {
+		return fmt.Errorf("failed to close WAL: %w", err)
+	}
+
+	// Truncate by recreating the file
+	file, err := os.Create(w.path)
+	if err != nil {
+		return fmt.Errorf("failed to truncate WAL: %w", err)
+	}
+	w.file = file
+
+	slog.Info("WAL truncated after snapshot")
+	return nil
+}
+
+// EntryCount returns the approximate number of entries in the WAL
+func (w *WAL) EntryCount() (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	info, err := w.file.Stat()
+	if err != nil {
+		return 0, err
+	}
+
+	// Rough estimate: ~200 bytes per entry on average
+	return int(info.Size() / 200), nil
 }

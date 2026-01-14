@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 
 	pb "eddisonso.com/go-gfs/gen/master"
 	"eddisonso.com/go-gfs/internal/master"
@@ -17,10 +18,12 @@ import (
 )
 
 var (
-	port           int
-	dataDir        string
-	logServiceAddr string
-	logSource      string
+	port             int
+	dataDir          string
+	logServiceAddr   string
+	logSource        string
+	snapshotInterval time.Duration
+	snapshotMaxWAL   int
 )
 
 func init() {
@@ -28,6 +31,8 @@ func init() {
 	flag.StringVar(&dataDir, "data", "/data/master", "Data directory for WAL")
 	flag.StringVar(&logServiceAddr, "log-service", "", "Log service address (e.g., log-service:50051)")
 	flag.StringVar(&logSource, "log-source", "gfs-master", "Log source name (e.g., pod name)")
+	flag.DurationVar(&snapshotInterval, "snapshot-interval", 5*time.Minute, "Interval between snapshot checks")
+	flag.IntVar(&snapshotMaxWAL, "snapshot-max-wal", 1000, "Max WAL entries before forcing snapshot")
 }
 
 func main() {
@@ -54,6 +59,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer m.Close()
+
+	// Start periodic snapshots
+	stopSnapshots := make(chan struct{})
+	m.StartPeriodicSnapshots(snapshotInterval, snapshotMaxWAL, stopSnapshots)
+	defer close(stopSnapshots)
 
 	// Create gRPC server
 	grpcServer := grpc.NewServer()
