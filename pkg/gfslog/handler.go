@@ -3,6 +3,7 @@ package gfslog
 import (
 	"context"
 	"log/slog"
+	"os"
 	"time"
 
 	pb "eddisonso.com/go-gfs/gen/logging"
@@ -21,7 +22,7 @@ type Handler struct {
 // NewHandler creates a new Handler that sends logs to both stdout and the log service.
 func NewHandler(source string, minLevel slog.Level, entryCh chan *pb.LogEntry) *Handler {
 	return &Handler{
-		stdout:   slog.NewTextHandler(nil, &slog.HandlerOptions{Level: minLevel}),
+		stdout:   slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: minLevel}),
 		source:   source,
 		entryCh:  entryCh,
 		minLevel: minLevel,
