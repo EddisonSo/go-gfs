@@ -43,6 +43,7 @@ const (
 
 // Lease duration for primary assignment
 const LeaseDuration = 60 * time.Second
+const LeaseGracePeriod = 60 * time.Second // Extra time before reassigning primary
 const defaultNamespace = "default"
 
 type fileKey struct {
@@ -741,8 +742,9 @@ func (m *Master) GetFileChunks(path, namespace string) ([]*ChunkInfo, error) {
 	chunks := make([]*ChunkInfo, 0, len(file.Chunks))
 	for _, handle := range file.Chunks {
 		if chunk, ok := m.chunks[handle]; ok {
-			// Check if lease has expired and reassign primary if needed
-			if chunk.Primary != nil && now.After(chunk.LeaseExpiration) {
+			// Only reassign primary if lease has been expired for longer than grace period
+			// This prevents reassigning during in-flight operations
+			if chunk.Primary != nil && now.After(chunk.LeaseExpiration.Add(LeaseGracePeriod)) {
 				m.reassignPrimaryLocked(chunk)
 			}
 			chunks = append(chunks, chunk)
