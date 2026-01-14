@@ -2,6 +2,7 @@ package masterclient
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -271,5 +272,33 @@ func (mc *MasterClient) RenewLease(chunkHandle string) (uint64, error) {
 	}
 
 	slog.Debug("lease renewed", "chunk", chunkHandle, "duration_ms", resp.LeaseDurationMs)
+	return resp.LeaseDurationMs, nil
+}
+
+// ClaimPrimary claims primary status for a chunk at the start of a write operation.
+// This should be called before accepting data from the client.
+// Returns the lease duration in milliseconds, or error if claim failed.
+func (mc *MasterClient) ClaimPrimary(chunkHandle string) (uint64, error) {
+	if mc.client == nil {
+		return 0, fmt.Errorf("no master connection")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := mc.client.ClaimPrimary(ctx, &pb.ClaimPrimaryRequest{
+		ServerId:    mc.serverID,
+		ChunkHandle: chunkHandle,
+	})
+
+	if err != nil {
+		return 0, fmt.Errorf("claim primary RPC failed: %w", err)
+	}
+
+	if !resp.Success {
+		return 0, fmt.Errorf("claim primary rejected: %s", resp.Message)
+	}
+
+	slog.Info("claimed primary", "chunk", chunkHandle, "duration_ms", resp.LeaseDurationMs)
 	return resp.LeaseDurationMs, nil
 }

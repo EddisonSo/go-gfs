@@ -266,6 +266,27 @@ func (s *GRPCServer) RenewLease(ctx context.Context, req *pb.RenewLeaseRequest) 
 	}, nil
 }
 
+// ClaimPrimary allows a chunkserver to claim primary status at the start of a write
+func (s *GRPCServer) ClaimPrimary(ctx context.Context, req *pb.ClaimPrimaryRequest) (*pb.ClaimPrimaryResponse, error) {
+	ok := s.master.ClaimPrimary(
+		ChunkHandle(req.ChunkHandle),
+		ChunkServerID(req.ServerId),
+	)
+
+	if !ok {
+		return &pb.ClaimPrimaryResponse{
+			Success: false,
+			Message: "claim primary failed: another server holds the lease or chunk not found",
+		}, nil
+	}
+
+	return &pb.ClaimPrimaryResponse{
+		Success:         true,
+		Message:         "primary claimed",
+		LeaseDurationMs: uint64(LeaseDuration.Milliseconds()),
+	}, nil
+}
+
 // Helper functions to convert internal types to protobuf types
 
 func fileInfoToProto(f *FileInfo) *pb.FileInfoResponse {

@@ -98,6 +98,16 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		slog.Error("Invalid file size", "file_size", claims.Filesize)
 	}
 
+	// Claim primary status before starting the write
+	// This verifies with the master that we're the primary and extends our lease
+	if mc := masterclient.GetInstance(); mc != nil {
+		if _, err := mc.ClaimPrimary(claims.ChunkHandle); err != nil {
+			slog.Error("failed to claim primary status", "chunk", claims.ChunkHandle, "error", err)
+			conn.Write([]byte{0}) // 0 = failure
+			return
+		}
+	}
+
 	// Acquire per-chunk write lock - serializes all writes to this chunk
 	// This is the GFS-like approach: only one write in flight per chunk at a time
 	ats := allocatortrackingservice.GetAllocatorTrackingService()

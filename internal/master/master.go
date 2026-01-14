@@ -827,6 +827,69 @@ func (m *Master) RenewLease(handle ChunkHandle, serverID ChunkServerID) bool {
 	return true
 }
 
+// ClaimPrimary allows a chunkserver to claim or verify primary status at the start of a write.
+// Unlike RenewLease, this can claim primary if:
+// - The requesting server is already the primary
+// - There is no primary assigned
+// - The current primary's lease has expired
+// Returns true if the claim succeeded, false otherwise.
+func (m *Master) ClaimPrimary(handle ChunkHandle, serverID ChunkServerID) bool {
+	m.chunkMu.Lock()
+	defer m.chunkMu.Unlock()
+
+	chunk, exists := m.chunks[handle]
+	if !exists {
+		slog.Warn("claim primary failed: chunk not found", "chunk", handle, "requestor", serverID)
+		return false
+	}
+
+	// Verify the requesting server has the chunk
+	hasChunk := false
+	var serverLoc *ChunkLocation
+	for i := range chunk.Locations {
+		if chunk.Locations[i].ServerID == serverID {
+			hasChunk = true
+			serverLoc = &chunk.Locations[i]
+			break
+		}
+	}
+	if !hasChunk {
+		slog.Warn("claim primary failed: server does not have chunk",
+			"chunk", handle, "requestor", serverID)
+		return false
+	}
+
+	now := time.Now()
+
+	// Case 1: Already the primary - just extend lease
+	if chunk.Primary != nil && chunk.Primary.ServerID == serverID {
+		chunk.LeaseExpiration = now.Add(LeaseDuration)
+		slog.Debug("claim primary: already primary, lease extended",
+			"chunk", handle, "primary", serverID)
+		return true
+	}
+
+	// Case 2: No primary or lease expired - claim it
+	if chunk.Primary == nil || now.After(chunk.LeaseExpiration) {
+		oldPrimary := ""
+		if chunk.Primary != nil {
+			oldPrimary = string(chunk.Primary.ServerID)
+		}
+		chunk.Primary = serverLoc
+		chunk.LeaseExpiration = now.Add(LeaseDuration)
+		slog.Info("claim primary: assigned new primary",
+			"chunk", handle, "newPrimary", serverID, "oldPrimary", oldPrimary)
+		return true
+	}
+
+	// Case 3: Another server is the active primary
+	slog.Warn("claim primary failed: another server is primary",
+		"chunk", handle, "requestor", serverID,
+		"currentPrimary", chunk.Primary.ServerID,
+		"leaseRemaining", chunk.LeaseExpiration.Sub(now))
+	return false
+}
+
 // ReportChunk is called by chunkservers to report they have a chunk
 func (m *Master) ReportChunk(serverID ChunkServerID, handle ChunkHandle) {
 	m.csMu.RLock()

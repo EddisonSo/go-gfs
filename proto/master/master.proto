@@ -87,6 +87,18 @@ message RenewLeaseResponse {
     uint64 lease_duration_ms = 3;  // Duration until lease expires (in milliseconds)
 }
 
+// Claim primary status at start of write operation
+message ClaimPrimaryRequest {
+    string server_id = 1;
+    string chunk_handle = 2;
+}
+
+message ClaimPrimaryResponse {
+    bool success = 1;
+    string message = 2;
+    uint64 lease_duration_ms = 3;  // Duration until lease expires (in milliseconds)
+}
+
 // ============ Client -> Master RPCs ============
 
 message CreateFileRequest {
@@ -190,6 +202,7 @@ service Master {
     rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
     rpc ReportCommit(ReportCommitRequest) returns (ReportCommitResponse);
     rpc RenewLease(RenewLeaseRequest) returns (RenewLeaseResponse);
+    rpc ClaimPrimary(ClaimPrimaryRequest) returns (ClaimPrimaryResponse);
 
     // File operations
     rpc CreateFile(CreateFileRequest) returns (CreateFileResponse);

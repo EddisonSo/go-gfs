@@ -23,6 +23,7 @@ const (
 	Master_Heartbeat_FullMethodName         = "/master.v1.Master/Heartbeat"
 	Master_ReportCommit_FullMethodName      = "/master.v1.Master/ReportCommit"
 	Master_RenewLease_FullMethodName        = "/master.v1.Master/RenewLease"
+	Master_ClaimPrimary_FullMethodName      = "/master.v1.Master/ClaimPrimary"
 	Master_CreateFile_FullMethodName        = "/master.v1.Master/CreateFile"
 	Master_GetFile_FullMethodName           = "/master.v1.Master/GetFile"
 	Master_DeleteFile_FullMethodName        = "/master.v1.Master/DeleteFile"
@@ -44,6 +45,7 @@ type MasterClient interface {
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
 	ReportCommit(ctx context.Context, in *ReportCommitRequest, opts ...grpc.CallOption) (*ReportCommitResponse, error)
 	RenewLease(ctx context.Context, in *RenewLeaseRequest, opts ...grpc.CallOption) (*RenewLeaseResponse, error)
+	ClaimPrimary(ctx context.Context, in *ClaimPrimaryRequest, opts ...grpc.CallOption) (*ClaimPrimaryResponse, error)
 	// File operations
 	CreateFile(ctx context.Context, in *CreateFileRequest, opts ...grpc.CallOption) (*CreateFileResponse, error)
 	GetFile(ctx context.Context, in *GetFileRequest, opts ...grpc.CallOption) (*GetFileResponse, error)
@@ -98,6 +100,16 @@ func (c *masterClient) RenewLease(ctx context.Context, in *RenewLeaseRequest, op
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(RenewLeaseResponse)
 	err := c.cc.Invoke(ctx, Master_RenewLease_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *masterClient) ClaimPrimary(ctx context.Context, in *ClaimPrimaryRequest, opts ...grpc.CallOption) (*ClaimPrimaryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClaimPrimaryResponse)
+	err := c.cc.Invoke(ctx, Master_ClaimPrimary_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -195,6 +207,7 @@ type MasterServer interface {
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
 	ReportCommit(context.Context, *ReportCommitRequest) (*ReportCommitResponse, error)
 	RenewLease(context.Context, *RenewLeaseRequest) (*RenewLeaseResponse, error)
+	ClaimPrimary(context.Context, *ClaimPrimaryRequest) (*ClaimPrimaryResponse, error)
 	// File operations
 	CreateFile(context.Context, *CreateFileRequest) (*CreateFileResponse, error)
 	GetFile(context.Context, *GetFileRequest) (*GetFileResponse, error)
@@ -226,6 +239,9 @@ func (UnimplementedMasterServer) ReportCommit(context.Context, *ReportCommitRequ
 }
 func (UnimplementedMasterServer) RenewLease(context.Context, *RenewLeaseRequest) (*RenewLeaseResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RenewLease not implemented")
+}
+func (UnimplementedMasterServer) ClaimPrimary(context.Context, *ClaimPrimaryRequest) (*ClaimPrimaryResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ClaimPrimary not implemented")
 }
 func (UnimplementedMasterServer) CreateFile(context.Context, *CreateFileRequest) (*CreateFileResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateFile not implemented")
@@ -340,6 +356,24 @@ func _Master_RenewLease_Handler(srv interface{}, ctx context.Context, dec func(i
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(MasterServer).RenewLease(ctx, req.(*RenewLeaseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Master_ClaimPrimary_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClaimPrimaryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MasterServer).ClaimPrimary(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Master_ClaimPrimary_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MasterServer).ClaimPrimary(ctx, req.(*ClaimPrimaryRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -510,6 +544,10 @@ var Master_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RenewLease",
 			Handler:    _Master_RenewLease_Handler,
+		},
+		{
+			MethodName: "ClaimPrimary",
+			Handler:    _Master_ClaimPrimary_Handler,
 		},
 		{
 			MethodName: "CreateFile",
