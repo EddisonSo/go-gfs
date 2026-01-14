@@ -98,12 +98,16 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		slog.Error("Invalid file size", "file_size", claims.Filesize)
 	}
 
+	// Acquire per-chunk write lock - serializes all writes to this chunk
+	// This is the GFS-like approach: only one write in flight per chunk at a time
+	ats := allocatortrackingservice.GetAllocatorTrackingService()
+	ats.AcquireWriteLock(claims.ChunkHandle)
+	defer ats.ReleaseWriteLock(claims.ChunkHandle)
+
 	// Start background lease renewal (every 30s) to handle long transfers
 	stopLeaseRenewal := make(chan struct{})
 	defer close(stopLeaseRenewal)
 	go fds.backgroundLeaseRenewal(claims.ChunkHandle, stopLeaseRenewal)
-
-	ats := allocatortrackingservice.GetAllocatorTrackingService()
 	currAllocator, err := ats.GetAllocator(claims.ChunkHandle)
 	if err != nil {
 		currAllocator = allocator.NewAllocator(64 << 20)
@@ -189,9 +193,9 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 	}
 
 	// Commit replicas AND primary in parallel for better performance
+	// With per-chunk serialization, we can commit directly without sequence ordering
 	var replicaErr error
 	var primaryErr error
-	var committed []*stagedchunk.StagedChunk
 
 	done := make(chan struct{}, 2)
 	go func() {
@@ -199,7 +203,7 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		done <- struct{}{}
 	}()
 	go func() {
-		committed, primaryErr = fds.ChunkStagingTrackingService.CommitInOrder(sc)
+		primaryErr = sc.Commit()
 		done <- struct{}{}
 	}()
 
@@ -217,7 +221,7 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		conn.Write([]byte{0}) // 0 = failure
 		return
 	}
-	slog.Info("primary committed", "opID", opId, "count", len(committed))
+	slog.Info("primary committed", "opID", opId)
 
 	slog.Info("commit successful", "opID", opId, "chunkHandle", claims.ChunkHandle, "offset", offset)
 

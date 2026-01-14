@@ -127,9 +127,9 @@ func (rp *ReplicationPlane) RecvCommit(ctx context.Context, req *pb.Commit) (*pb
 		}, nil
 	}
 
-	// Commit in sequence order (may buffer if out of order)
-	committed, err := trackingService.CommitInOrder(sc)
-	if err != nil {
+	// With per-chunk serialization on the primary, commits arrive in order
+	// No need for sequence-based ordering - commit directly
+	if err := sc.Commit(); err != nil {
 		slog.Error("failed to commit staged chunk", "opID", opID, "chunkHandle", sc.ChunkHandle, "error", err)
 		return &pb.ReplicationResponse{
 			Success: false,
@@ -137,11 +137,7 @@ func (rp *ReplicationPlane) RecvCommit(ctx context.Context, req *pb.Commit) (*pb
 		}, nil
 	}
 
-	if len(committed) > 0 {
-		slog.Info("commits applied", "opID", opID, "chunkHandle", sc.ChunkHandle, "count", len(committed), "sequence", sc.Sequence)
-	} else {
-		slog.Info("commit buffered (waiting for earlier sequence)", "opID", opID, "chunkHandle", sc.ChunkHandle, "sequence", sc.Sequence)
-	}
+	slog.Info("commit applied", "opID", opID, "chunkHandle", sc.ChunkHandle, "sequence", sc.Sequence)
 
 	return &pb.ReplicationResponse{
 		Success: true,
