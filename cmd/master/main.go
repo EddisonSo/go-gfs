@@ -20,12 +20,14 @@ var (
 	port           int
 	dataDir        string
 	logServiceAddr string
+	logSource      string
 )
 
 func init() {
 	flag.IntVar(&port, "port", 9000, "Master server port")
 	flag.StringVar(&dataDir, "data", "/data/master", "Data directory for WAL")
 	flag.StringVar(&logServiceAddr, "log-service", "", "Log service address (e.g., log-service:50051)")
+	flag.StringVar(&logSource, "log-source", "gfs-master", "Log source name (e.g., pod name)")
 }
 
 func main() {
@@ -34,7 +36,7 @@ func main() {
 	// Initialize logger
 	if logServiceAddr != "" {
 		logger := gfslog.NewLogger(gfslog.Config{
-			Source:         "master",
+			Source:         logSource,
 			LogServiceAddr: logServiceAddr,
 			MinLevel:       slog.LevelDebug,
 		})
