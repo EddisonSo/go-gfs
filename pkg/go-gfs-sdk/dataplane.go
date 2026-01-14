@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"strings"
-	"sync"
 	"time"
 
 	pb "eddisonso.com/go-gfs/gen/master"
@@ -31,21 +30,14 @@ func (c *Client) ReadFileWithNamespace(ctx context.Context, path, namespace stri
 	return buf.Bytes(), nil
 }
 
-// chunkReadResult holds the result of reading a single chunk.
-type chunkReadResult struct {
-	index int
-	data  []byte
-	err   error
-}
-
 // ReadTo streams file contents to the provided writer.
-// Chunks are read in parallel for better performance.
+// Chunks are read sequentially and streamed directly without buffering.
 func (c *Client) ReadTo(ctx context.Context, path string, w io.Writer) (int64, error) {
 	return c.ReadToWithNamespace(ctx, path, "", w)
 }
 
 // ReadToWithNamespace streams file contents to the provided writer with a namespace.
-// Chunks are read in parallel with automatic failover to replica servers.
+// Chunks are read sequentially and streamed directly to avoid memory buffering.
 func (c *Client) ReadToWithNamespace(ctx context.Context, path, namespace string, w io.Writer) (int64, error) {
 	chunks, err := c.GetChunkLocationsWithNamespace(ctx, path, namespace)
 	if err != nil {
@@ -55,84 +47,17 @@ func (c *Client) ReadToWithNamespace(ctx context.Context, path, namespace string
 		return 0, ErrNoChunkLocations
 	}
 
-	// Read chunks in parallel with bounded concurrency and failover
-	sem := make(chan struct{}, c.readConcurrency)
-	results := make(chan chunkReadResult, len(chunks))
-	var wg sync.WaitGroup
-
-	for i, chunk := range chunks {
-		wg.Add(1)
-		go func(index int, chunk *pb.ChunkLocationInfo) {
-			defer wg.Done()
-
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx.Done():
-				results <- chunkReadResult{index: index, err: ctx.Err()}
-				return
-			}
-
-			var buf bytes.Buffer
-			chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
-			_, err := c.readChunkWithFailover(chunkCtx, chunk, &buf)
-			cancel()
-
-			if err != nil {
-				results <- chunkReadResult{index: index, err: err}
-				return
-			}
-
-			results <- chunkReadResult{index: index, data: buf.Bytes()}
-		}(i, chunk)
-	}
-
-	// Close results channel when all goroutines complete
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Stream results in order as they become available
-	pending := make(map[int][]byte, len(chunks))
-	nextIndex := 0
+	// Stream chunks sequentially to avoid memory buffering
 	var total int64
-	var readErr error
+	for _, chunk := range chunks {
+		chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
+		n, err := c.readChunkWithFailover(chunkCtx, chunk, w)
+		cancel()
 
-	for result := range results {
-		if result.err != nil {
-			readErr = result.err
-			continue
+		if err != nil {
+			return total, err
 		}
-
-		if result.index == nextIndex {
-			n, err := w.Write(result.data)
-			if err != nil {
-				return total, err
-			}
-			total += int64(n)
-			nextIndex++
-
-			for {
-				data, ok := pending[nextIndex]
-				if !ok {
-					break
-				}
-				delete(pending, nextIndex)
-				n, err := w.Write(data)
-				if err != nil {
-					return total, err
-				}
-				total += int64(n)
-				nextIndex++
-			}
-		} else {
-			pending[result.index] = result.data
-		}
-	}
-
-	if readErr != nil {
-		return total, readErr
+		total += n
 	}
 
 	return total, nil
