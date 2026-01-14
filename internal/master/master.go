@@ -843,6 +843,24 @@ func (m *Master) ReportChunk(serverID ChunkServerID, handle ChunkHandle) {
 	m.chunkMu.RUnlock()
 
 	if !chunkExists {
+		// Check if chunk is already pending deletion (recently deleted file)
+		m.pendingDeletesMu.Lock()
+		pendingForServer := m.pendingDeletes[serverID]
+		alreadyPendingDelete := false
+		for _, h := range pendingForServer {
+			if h == handle {
+				alreadyPendingDelete = true
+				break
+			}
+		}
+		m.pendingDeletesMu.Unlock()
+
+		if alreadyPendingDelete {
+			// Chunk is scheduled for deletion, not truly orphaned
+			slog.Debug("chunk pending deletion reported by server", "serverID", serverID, "handle", handle)
+			return
+		}
+
 		// Chunk not in master's records - track as orphaned
 		m.handleOrphanedChunk(serverID, handle)
 		return
