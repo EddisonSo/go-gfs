@@ -798,11 +798,25 @@ func (m *Master) RenewLease(handle ChunkHandle, serverID ChunkServerID) bool {
 
 	chunk, exists := m.chunks[handle]
 	if !exists {
+		slog.Warn("lease renewal failed: chunk not found", "chunk", handle, "requestor", serverID)
 		return false
 	}
 
 	// Only the current primary can renew the lease
-	if chunk.Primary == nil || chunk.Primary.ServerID != serverID {
+	if chunk.Primary == nil {
+		slog.Warn("lease renewal failed: no primary assigned",
+			"chunk", handle,
+			"requestor", serverID,
+			"numLocations", len(chunk.Locations))
+		return false
+	}
+
+	if chunk.Primary.ServerID != serverID {
+		slog.Warn("lease renewal failed: requestor is not primary",
+			"chunk", handle,
+			"requestor", serverID,
+			"actualPrimary", chunk.Primary.ServerID,
+			"leaseExpired", time.Now().After(chunk.LeaseExpiration))
 		return false
 	}
 
