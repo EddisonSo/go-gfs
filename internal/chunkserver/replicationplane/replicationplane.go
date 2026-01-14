@@ -137,6 +137,9 @@ func (rp *ReplicationPlane) RecvCommit(ctx context.Context, req *pb.Commit) (*pb
 		}, nil
 	}
 
+	// Remove from tracking after successful commit
+	trackingService.RemoveStagedChunk(opID)
+
 	slog.Info("commit applied", "opID", opID, "chunkHandle", sc.ChunkHandle, "sequence", sc.Sequence)
 
 	return &pb.ReplicationResponse{

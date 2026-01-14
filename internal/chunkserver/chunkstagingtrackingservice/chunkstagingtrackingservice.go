@@ -118,6 +118,13 @@ func (csts *ChunkStagingTrackingService) GetStagedChunk(opId string) *stagedchun
 	return csts.stagedChunks[opId]
 }
 
+// RemoveStagedChunk removes a staged chunk from tracking after successful commit
+func (csts *ChunkStagingTrackingService) RemoveStagedChunk(opId string) {
+	csts.mux.Lock()
+	defer csts.mux.Unlock()
+	delete(csts.stagedChunks, opId)
+}
+
 // AbortAll aborts all staged chunks and cleans up staging data.
 // Called during graceful shutdown.
 func (csts *ChunkStagingTrackingService) AbortAll() {

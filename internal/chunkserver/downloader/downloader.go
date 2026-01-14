@@ -225,6 +225,9 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 
 	slog.Info("commit successful", "opID", opId, "chunkHandle", claims.ChunkHandle, "offset", offset)
 
+	// Remove from tracking after successful commit
+	fds.ChunkStagingTrackingService.RemoveStagedChunk(opId)
+
 	// Report commit to master (if connected)
 	if mc := masterclient.GetInstance(); mc != nil {
 		if err := mc.ReportCommit(claims.ChunkHandle, claims.Filesize); err != nil {
