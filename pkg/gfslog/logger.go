@@ -3,7 +3,6 @@ package gfslog
 import (
 	"context"
 	"log/slog"
-	"os"
 	"sync"
 	"time"
 
@@ -45,16 +44,9 @@ func NewLogger(cfg Config) *Logger {
 
 	handler := NewHandler(cfg.Source, cfg.MinLevel, entryCh)
 
-	// Create stdout handler if we can't connect to log service
-	stdoutHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.MinLevel})
-
-	// Create multi-handler that writes to both stdout and remote
-	multiHandler := &multiHandler{
-		handlers: []slog.Handler{stdoutHandler, handler},
-	}
-
+	// Note: Handler already writes to stdout internally
 	logger := &Logger{
-		Logger:   slog.New(multiHandler),
+		Logger:   slog.New(handler),
 		entryCh:  entryCh,
 		addr:     cfg.LogServiceAddr,
 		source:   cfg.Source,
@@ -156,42 +148,3 @@ func (l *Logger) sendEntry(entry *pb.LogEntry) error {
 	return err
 }
 
-// multiHandler sends log records to multiple handlers.
-type multiHandler struct {
-	handlers []slog.Handler
-}
-
-func (m *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	for _, h := range m.handlers {
-		if h.Enabled(ctx, level) {
-			return true
-		}
-	}
-	return false
-}
-
-func (m *multiHandler) Handle(ctx context.Context, r slog.Record) error {
-	for _, h := range m.handlers {
-		if h.Enabled(ctx, r.Level) {
-			// Ignore errors - we want to send to all handlers
-			h.Handle(ctx, r)
-		}
-	}
-	return nil
-}
-
-func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	handlers := make([]slog.Handler, len(m.handlers))
-	for i, h := range m.handlers {
-		handlers[i] = h.WithAttrs(attrs)
-	}
-	return &multiHandler{handlers: handlers}
-}
-
-func (m *multiHandler) WithGroup(name string) slog.Handler {
-	handlers := make([]slog.Handler, len(m.handlers))
-	for i, h := range m.handlers {
-		handlers[i] = h.WithGroup(name)
-	}
-	return &multiHandler{handlers: handlers}
-}
