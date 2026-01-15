@@ -503,6 +503,11 @@ func (c *Client) buildWriteTargets(info *pb.ChunkLocationInfo) (csstructs.Replic
 		return csstructs.ReplicaIdentifier{}, nil, ErrNoPrimary
 	}
 
+	// Validate that primary has valid hostname and port
+	if info.Primary.Hostname == "" || info.Primary.DataPort == 0 {
+		return csstructs.ReplicaIdentifier{}, nil, ErrNoPrimary
+	}
+
 	primary := csstructs.ReplicaIdentifier{
 		ID:              info.Primary.ServerId,
 		Hostname:        info.Primary.Hostname,
