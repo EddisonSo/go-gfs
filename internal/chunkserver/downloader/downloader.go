@@ -94,8 +94,9 @@ func (fds *FileDownloadService) HandleDownload(conn net.Conn) {
 		return
 	}
 
-	if claims.Filesize <= 0 || claims.Filesize > 2<<26 { //Max 64 MB
+	if claims.Filesize <= 0 || claims.Filesize > 64<<20 { // Max 64 MB
 		slog.Error("Invalid file size", "file_size", claims.Filesize)
+		return
 	}
 
 	// Claim primary status before starting the write

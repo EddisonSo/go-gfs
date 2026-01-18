@@ -190,7 +190,7 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 		if p.index >= len(p.chunks) {
 			chunk, err := c.AllocateChunkWithNamespace(ctx, p.path, p.namespace)
 			if err != nil {
-				return total, fmt.Errorf("failed to allocate chunk: %w", err)
+				return total, fmt.Errorf("failed to allocate chunk %d for %s: %w", p.index, p.path, err)
 			}
 			p.chunks = append(p.chunks, chunk)
 		}
@@ -255,7 +255,8 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 		_, err = c.writeChunk(writeCtx, primary, replicas, chunk.ChunkHandle, chunkData, -1)
 		writeCancel()
 		if err != nil {
-			return total, err
+			return total, fmt.Errorf("failed to write %d bytes to chunk %s (index %d): %w",
+				len(chunkData), chunk.ChunkHandle, p.index, err)
 		}
 
 		// Update chunk size in our local copy

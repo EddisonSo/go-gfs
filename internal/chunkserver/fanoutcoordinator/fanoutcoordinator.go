@@ -46,10 +46,19 @@ func (f *fanoutcoordinator) StartFanout(conn net.Conn, jwtTokenString string) er
 		n, err := conn.Read(buf)
 		if n > 0 {
 			total += n
-			f.stagedchunk.Write(buf[:n])
+			if _, writeErr := f.stagedchunk.Write(buf[:n]); writeErr != nil {
+				slog.Error("failed to write to staged chunk", "error", writeErr, "totalBytes", total)
+				for _, fw := range forwarders {
+					fw.Pw.Close()
+				}
+				return writeErr
+			}
 
-			for _, fw := range forwarders {
-				fw.Pw.Write(buf[:n])
+			for i, fw := range forwarders {
+				if _, writeErr := fw.Pw.Write(buf[:n]); writeErr != nil {
+					slog.Error("failed to write to forwarder", "index", i, "error", writeErr)
+					// Continue writing to other forwarders - quorum may still succeed
+				}
 			}
 		}
 		if err != nil {
