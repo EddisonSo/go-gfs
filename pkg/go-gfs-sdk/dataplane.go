@@ -79,26 +79,66 @@ func (c *Client) AppendWithNamespace(ctx context.Context, path, namespace string
 }
 
 // AppendFromWithNamespace streams data from a reader and appends it to the file in a namespace.
+// Uses double-buffering to overlap reading with writing for better throughput.
 func (c *Client) AppendFromWithNamespace(ctx context.Context, path, namespace string, r io.Reader) (int64, error) {
-	buf := make([]byte, int(c.maxChunkSize))
+	ns := normalizeNamespace(namespace)
+
+	// Double buffer for pipelining: read next chunk while writing current
+	bufs := [2][]byte{
+		make([]byte, int(c.maxChunkSize)),
+		make([]byte, int(c.maxChunkSize)),
+	}
+
 	var total int64
+	var resultChan chan writeResult
+	bufIdx := 0
 
 	for {
-		// Use io.ReadFull to fill the buffer before writing.
-		// This avoids making a gRPC call for every small HTTP chunk.
-		n, err := io.ReadFull(r, buf)
-		if n > 0 {
-			written, writeErr := c.appendData(ctx, path, normalizeNamespace(namespace), buf[:n])
-			total += int64(written)
-			if writeErr != nil {
-				return total, writeErr
+		// Read into current buffer
+		n, readErr := io.ReadFull(r, bufs[bufIdx])
+
+		// Wait for previous write to complete before starting new one
+		if resultChan != nil {
+			result := <-resultChan
+			total += int64(result.written)
+			if result.err != nil {
+				return total, result.err
 			}
 		}
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
+
+		if n > 0 {
+			// Start async write
+			data := bufs[bufIdx][:n]
+			resultChan = make(chan writeResult, 1)
+
+			go func(data []byte, ch chan writeResult) {
+				written, err := c.appendData(ctx, path, ns, data)
+				ch <- writeResult{written: written, err: err}
+			}(data, resultChan)
+
+			// Swap buffers for next read
+			bufIdx = 1 - bufIdx
+		}
+
+		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 			break
 		}
-		if err != nil {
-			return total, err
+		if readErr != nil {
+			// Wait for pending write
+			if resultChan != nil {
+				result := <-resultChan
+				total += int64(result.written)
+			}
+			return total, readErr
+		}
+	}
+
+	// Wait for final write
+	if resultChan != nil {
+		result := <-resultChan
+		total += int64(result.written)
+		if result.err != nil {
+			return total, result.err
 		}
 	}
 
