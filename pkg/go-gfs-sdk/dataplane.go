@@ -251,8 +251,17 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 			return total, err
 		}
 
+		// Track bytes sent for progress reporting during transmission
+		baseBytes := p.bytesWritten
+		var progressCallback writeChunkProgress
+		if p.onProgress != nil {
+			progressCallback = func(bytesSent int) {
+				p.onProgress(baseBytes + int64(bytesSent))
+			}
+		}
+
 		writeCtx, writeCancel := context.WithTimeout(ctx, c.chunkTimeout)
-		_, err = c.writeChunk(writeCtx, primary, replicas, chunk.ChunkHandle, chunkData, -1)
+		_, err = c.writeChunkWithProgress(writeCtx, primary, replicas, chunk.ChunkHandle, chunkData, -1, progressCallback)
 		writeCancel()
 		if err != nil {
 			return total, fmt.Errorf("failed to write %d bytes to chunk %s (index %d): %w",
@@ -263,11 +272,8 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 		chunk.Size += uint64(writeSize)
 		total += writeSize
 
-		// Track total bytes written and notify progress
+		// Update total bytes written (already reported via progressCallback during write)
 		p.bytesWritten += int64(writeSize)
-		if p.onProgress != nil {
-			p.onProgress(p.bytesWritten)
-		}
 
 		// If chunk is full, move to next
 		if int64(chunk.Size) >= c.maxChunkSize {
@@ -532,7 +538,14 @@ func (c *Client) buildWriteTargets(info *pb.ChunkLocationInfo) (csstructs.Replic
 	return primary, replicas, nil
 }
 
+// writeChunkProgress is called during data transmission with bytes sent so far within this chunk.
+type writeChunkProgress func(bytesSent int)
+
 func (c *Client) writeChunk(ctx context.Context, primary csstructs.ReplicaIdentifier, replicas []csstructs.ReplicaIdentifier, chunkHandle string, data []byte, offset int64) (uint64, error) {
+	return c.writeChunkWithProgress(ctx, primary, replicas, chunkHandle, data, offset, nil)
+}
+
+func (c *Client) writeChunkWithProgress(ctx context.Context, primary csstructs.ReplicaIdentifier, replicas []csstructs.ReplicaIdentifier, chunkHandle string, data []byte, offset int64, onProgress writeChunkProgress) (uint64, error) {
 	conn, err := dialWithContext(ctx, primary.Hostname, primary.DataPort)
 	if err != nil {
 		return 0, fmt.Errorf("failed to connect: %w", err)
@@ -584,8 +597,24 @@ func (c *Client) writeChunk(ctx context.Context, primary csstructs.ReplicaIdenti
 	}
 	offsetValue := binary.BigEndian.Uint64(offsetBytes)
 
-	if _, err = conn.Write(data); err != nil {
-		return 0, fmt.Errorf("failed to send data: %w", err)
+	// Write data in smaller chunks to enable progress reporting
+	const writeChunkSize = 1 << 20 // 1MB increments for progress updates
+	totalSent := 0
+	remaining := data
+	for len(remaining) > 0 {
+		writeSize := writeChunkSize
+		if writeSize > len(remaining) {
+			writeSize = len(remaining)
+		}
+		n, err := conn.Write(remaining[:writeSize])
+		if err != nil {
+			return 0, fmt.Errorf("failed to send data: %w", err)
+		}
+		totalSent += n
+		remaining = remaining[n:]
+		if onProgress != nil {
+			onProgress(totalSent)
+		}
 	}
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
