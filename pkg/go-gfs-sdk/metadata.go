@@ -3,6 +3,7 @@ package gfs
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	pb "eddisonso.com/go-gfs/gen/master"
 )
@@ -190,6 +191,8 @@ type PreparedUpload struct {
 	prefetchCh   chan *pb.ChunkLocationInfo
 	prefetchErr  error
 	prefetching  bool
+	// Mutex for concurrent appendData calls (pipelined writes)
+	mu sync.Mutex
 }
 
 // OnProgress sets a callback that's invoked after each chunk write completes.

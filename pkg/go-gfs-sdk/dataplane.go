@@ -331,35 +331,45 @@ func (p *PreparedUpload) getPrefetchedChunk() (*pb.ChunkLocationInfo, error) {
 }
 
 // appendData writes data, allocating new chunks on-demand as needed.
+// Thread-safe for concurrent calls (pipelined writes).
 func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, error) {
 	c := p.client
 	total := 0
 	remaining := data
 
 	for len(remaining) > 0 {
+		// Lock while we claim a chunk and determine write parameters
+		p.mu.Lock()
+
 		// Allocate new chunk if needed
 		if p.index >= len(p.chunks) {
 			// Check for pre-fetched chunk first
 			if prefetched, err := p.getPrefetchedChunk(); err != nil {
+				p.mu.Unlock()
 				return total, fmt.Errorf("failed to allocate chunk %d for %s: %w", p.index, p.path, err)
 			} else if prefetched != nil {
 				p.chunks = append(p.chunks, prefetched)
 			} else {
-				// No pre-fetch, allocate synchronously
+				// No pre-fetch, allocate synchronously (still under lock)
+				p.mu.Unlock()
 				chunk, err := c.AllocateChunkWithNamespace(ctx, p.path, p.namespace)
 				if err != nil {
 					return total, fmt.Errorf("failed to allocate chunk %d for %s: %w", p.index, p.path, err)
 				}
+				p.mu.Lock()
 				p.chunks = append(p.chunks, chunk)
 			}
 		}
-		chunk := p.chunks[p.index]
 
-		// Calculate space available in current chunk
+		// Get current chunk and calculate space
+		chunkIdx := p.index
+		chunk := p.chunks[chunkIdx]
 		spaceAvailable := c.maxChunkSize - int64(chunk.Size)
+
 		if spaceAvailable <= 0 {
 			// Chunk is full, move to next
 			p.index++
+			p.mu.Unlock()
 			continue
 		}
 
@@ -368,12 +378,25 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 			writeSize = int(spaceAvailable)
 		}
 
-		// If this write will fill the chunk, pre-fetch next chunk while writing
+		// Reserve this space by updating chunk size now
+		chunk.Size += uint64(writeSize)
+
+		// If this write will fill the chunk, move index and pre-fetch
 		willFillChunk := int64(writeSize) >= spaceAvailable
-		if willFillChunk && p.index+1 >= len(p.chunks) {
-			p.startPrefetch(ctx)
+		if willFillChunk {
+			p.index++
+			if p.index >= len(p.chunks) {
+				p.startPrefetch(ctx)
+			}
 		}
 
+		// Capture progress base before unlocking
+		baseBytes := p.bytesWritten
+		p.bytesWritten += int64(writeSize)
+
+		p.mu.Unlock()
+
+		// Now do the actual write without holding the lock
 		chunkData := remaining[:writeSize]
 		remaining = remaining[writeSize:]
 
@@ -407,17 +430,18 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 			if refreshErr != nil {
 				return total, refreshErr
 			}
-			if p.index < len(refreshedChunks) {
-				chunk = refreshedChunks[p.index]
-				p.chunks[p.index] = chunk
+			if chunkIdx < len(refreshedChunks) {
+				chunk = refreshedChunks[chunkIdx]
+				p.mu.Lock()
+				p.chunks[chunkIdx] = chunk
+				p.mu.Unlock()
 			}
 		}
 		if err != nil {
 			return total, err
 		}
 
-		// Track bytes sent for progress reporting during transmission
-		baseBytes := p.bytesWritten
+		// Progress callback using baseBytes captured earlier
 		var progressCallback writeChunkProgress
 		if p.onProgress != nil {
 			progressCallback = func(bytesSent int) {
@@ -430,20 +454,11 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 		writeCancel()
 		if err != nil {
 			return total, fmt.Errorf("failed to write %d bytes to chunk %s (index %d): %w",
-				len(chunkData), chunk.ChunkHandle, p.index, err)
+				len(chunkData), chunk.ChunkHandle, chunkIdx, err)
 		}
 
-		// Update chunk size in our local copy
-		chunk.Size += uint64(writeSize)
+		// Size, index, and bytesWritten already updated before the write
 		total += writeSize
-
-		// Update total bytes written (already reported via progressCallback during write)
-		p.bytesWritten += int64(writeSize)
-
-		// If chunk is full, move to next
-		if int64(chunk.Size) >= c.maxChunkSize {
-			p.index++
-		}
 	}
 
 	return total, nil
