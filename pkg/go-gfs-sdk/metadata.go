@@ -186,6 +186,10 @@ type PreparedUpload struct {
 	index        int // current chunk index
 	bytesWritten int64
 	onProgress   ProgressFunc
+	// Pre-fetch state for async chunk allocation
+	prefetchCh   chan *pb.ChunkLocationInfo
+	prefetchErr  error
+	prefetching  bool
 }
 
 // OnProgress sets a callback that's invoked after each chunk write completes.

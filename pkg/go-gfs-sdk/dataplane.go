@@ -80,69 +80,14 @@ func (c *Client) AppendWithNamespace(ctx context.Context, path, namespace string
 
 // AppendFromWithNamespace streams data from a reader and appends it to the file in a namespace.
 // Uses double-buffering to overlap reading with writing for better throughput.
+// Also uses async chunk pre-allocation to minimize pauses between chunks.
 func (c *Client) AppendFromWithNamespace(ctx context.Context, path, namespace string, r io.Reader) (int64, error) {
-	ns := normalizeNamespace(namespace)
-
-	// Double buffer for pipelining: read next chunk while writing current
-	bufs := [2][]byte{
-		make([]byte, int(c.maxChunkSize)),
-		make([]byte, int(c.maxChunkSize)),
+	// Use PreparedUpload for chunk pre-fetching capability
+	prep, err := c.PrepareUploadWithNamespace(ctx, path, namespace, 0)
+	if err != nil {
+		return 0, err
 	}
-
-	var total int64
-	var resultChan chan writeResult
-	bufIdx := 0
-
-	for {
-		// Read into current buffer
-		n, readErr := io.ReadFull(r, bufs[bufIdx])
-
-		// Wait for previous write to complete before starting new one
-		if resultChan != nil {
-			result := <-resultChan
-			total += int64(result.written)
-			if result.err != nil {
-				return total, result.err
-			}
-		}
-
-		if n > 0 {
-			// Start async write
-			data := bufs[bufIdx][:n]
-			resultChan = make(chan writeResult, 1)
-
-			go func(data []byte, ch chan writeResult) {
-				written, err := c.appendData(ctx, path, ns, data)
-				ch <- writeResult{written: written, err: err}
-			}(data, resultChan)
-
-			// Swap buffers for next read
-			bufIdx = 1 - bufIdx
-		}
-
-		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-			break
-		}
-		if readErr != nil {
-			// Wait for pending write
-			if resultChan != nil {
-				result := <-resultChan
-				total += int64(result.written)
-			}
-			return total, readErr
-		}
-	}
-
-	// Wait for final write
-	if resultChan != nil {
-		result := <-resultChan
-		total += int64(result.written)
-		if result.err != nil {
-			return total, result.err
-		}
-	}
-
-	return total, nil
+	return prep.AppendFrom(ctx, r)
 }
 
 // writeResult holds the result of an async write operation.
@@ -219,6 +164,46 @@ func (p *PreparedUpload) AppendFrom(ctx context.Context, r io.Reader) (int64, er
 	return total, nil
 }
 
+// startPrefetch starts allocating the next chunk in the background.
+// Note: If the upload fails before consuming the pre-fetched chunk, that chunk
+// becomes orphaned in the master's metadata. It will be cleaned up when the file
+// is deleted, or by future garbage collection. This trade-off is acceptable for
+// the significant performance improvement from reduced inter-chunk latency.
+func (p *PreparedUpload) startPrefetch(ctx context.Context) {
+	if p.prefetching {
+		return
+	}
+	p.prefetching = true
+	p.prefetchCh = make(chan *pb.ChunkLocationInfo, 1)
+	go func() {
+		// Use a separate context so prefetch isn't cancelled if parent context times out
+		// during chunk write (we still want the prefetch to complete)
+		prefetchCtx, cancel := context.WithTimeout(context.Background(), p.client.chunkTimeout)
+		defer cancel()
+		chunk, err := p.client.AllocateChunkWithNamespace(prefetchCtx, p.path, p.namespace)
+		if err != nil {
+			p.prefetchErr = err
+			close(p.prefetchCh)
+			return
+		}
+		p.prefetchCh <- chunk
+		close(p.prefetchCh)
+	}()
+}
+
+// getPrefetchedChunk retrieves the pre-fetched chunk, waiting if needed.
+func (p *PreparedUpload) getPrefetchedChunk() (*pb.ChunkLocationInfo, error) {
+	if !p.prefetching {
+		return nil, nil
+	}
+	chunk, ok := <-p.prefetchCh
+	p.prefetching = false
+	if !ok {
+		return nil, p.prefetchErr
+	}
+	return chunk, nil
+}
+
 // appendData writes data, allocating new chunks on-demand as needed.
 func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, error) {
 	c := p.client
@@ -228,11 +213,19 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 	for len(remaining) > 0 {
 		// Allocate new chunk if needed
 		if p.index >= len(p.chunks) {
-			chunk, err := c.AllocateChunkWithNamespace(ctx, p.path, p.namespace)
-			if err != nil {
+			// Check for pre-fetched chunk first
+			if prefetched, err := p.getPrefetchedChunk(); err != nil {
 				return total, fmt.Errorf("failed to allocate chunk %d for %s: %w", p.index, p.path, err)
+			} else if prefetched != nil {
+				p.chunks = append(p.chunks, prefetched)
+			} else {
+				// No pre-fetch, allocate synchronously
+				chunk, err := c.AllocateChunkWithNamespace(ctx, p.path, p.namespace)
+				if err != nil {
+					return total, fmt.Errorf("failed to allocate chunk %d for %s: %w", p.index, p.path, err)
+				}
+				p.chunks = append(p.chunks, chunk)
 			}
-			p.chunks = append(p.chunks, chunk)
 		}
 		chunk := p.chunks[p.index]
 
@@ -247,6 +240,12 @@ func (p *PreparedUpload) appendData(ctx context.Context, data []byte) (int, erro
 		writeSize := len(remaining)
 		if int64(writeSize) > spaceAvailable {
 			writeSize = int(spaceAvailable)
+		}
+
+		// If this write will fill the chunk, pre-fetch next chunk while writing
+		willFillChunk := int64(writeSize) >= spaceAvailable
+		if willFillChunk && p.index+1 >= len(p.chunks) {
+			p.startPrefetch(ctx)
 		}
 
 		chunkData := remaining[:writeSize]
