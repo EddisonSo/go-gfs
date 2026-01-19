@@ -199,70 +199,95 @@ type writeResult struct {
 
 // AppendFrom streams data using pre-allocated chunks.
 // This is faster than Client.AppendFrom because chunks are already allocated.
-// Uses double-buffering to overlap reading with writing.
+// Uses triple-buffering with 2 in-flight writes to overlap commit latency.
 func (p *PreparedUpload) AppendFrom(ctx context.Context, r io.Reader) (int64, error) {
 	c := p.client
 
-	// Double buffer for pipelining: read next chunk while writing current
-	bufs := [2][]byte{
-		make([]byte, int(c.maxChunkSize)),
-		make([]byte, int(c.maxChunkSize)),
+	// Triple buffer for pipelining: allows 2 writes in-flight while reading next
+	// This overlaps the commit wait of chunk N with the data transfer of chunk N+1
+	const numBuffers = 3
+	const maxInFlight = 2
+	bufs := make([][]byte, numBuffers)
+	for i := range bufs {
+		bufs[i] = make([]byte, int(c.maxChunkSize))
 	}
 
 	var total int64
-	var resultChan chan writeResult
 	bufIdx := 0
+
+	// Track in-flight writes with their results
+	type inflightWrite struct {
+		resultChan chan writeResult
+		bufIdx     int
+	}
+	inflight := make([]inflightWrite, 0, maxInFlight)
+
+	// Helper to wait for oldest write if we have too many in-flight
+	waitForOldest := func() error {
+		if len(inflight) == 0 {
+			return nil
+		}
+		result := <-inflight[0].resultChan
+		total += int64(result.written)
+		inflight = inflight[1:]
+		return result.err
+	}
 
 	for {
 		// Read into current buffer
 		n, readErr := io.ReadFull(r, bufs[bufIdx])
 
-		// Wait for previous write to complete before starting new one
-		if resultChan != nil {
-			result := <-resultChan
-			total += int64(result.written)
-			if result.err != nil {
-				return total, result.err
+		// If we have max in-flight writes, wait for the oldest to complete
+		if len(inflight) >= maxInFlight {
+			if err := waitForOldest(); err != nil {
+				// Drain remaining in-flight writes before returning
+				for _, iw := range inflight {
+					<-iw.resultChan
+				}
+				return total, err
 			}
 		}
 
 		if n > 0 {
 			// Start async write
 			data := bufs[bufIdx][:n]
-			resultChan = make(chan writeResult, 1)
+			resultChan := make(chan writeResult, 1)
 
 			go func(data []byte, ch chan writeResult) {
 				written, err := p.appendData(ctx, data)
 				ch <- writeResult{written: written, err: err}
 			}(data, resultChan)
 
-			// Swap buffers for next read
-			bufIdx = 1 - bufIdx
+			inflight = append(inflight, inflightWrite{resultChan: resultChan, bufIdx: bufIdx})
+
+			// Move to next buffer
+			bufIdx = (bufIdx + 1) % numBuffers
 		}
 
 		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 			break
 		}
 		if readErr != nil {
-			// Wait for pending write
-			if resultChan != nil {
-				result := <-resultChan
+			// Drain in-flight writes
+			for _, iw := range inflight {
+				result := <-iw.resultChan
 				total += int64(result.written)
 			}
 			return total, readErr
 		}
 	}
 
-	// Wait for final write
-	if resultChan != nil {
-		result := <-resultChan
+	// Wait for all remaining in-flight writes
+	var firstErr error
+	for _, iw := range inflight {
+		result := <-iw.resultChan
 		total += int64(result.written)
-		if result.err != nil {
-			return total, result.err
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
 		}
 	}
 
-	return total, nil
+	return total, firstErr
 }
 
 // startPrefetch starts allocating the next chunk in the background.
