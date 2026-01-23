@@ -32,18 +32,22 @@ func (f *fanoutcoordinator) SetStagedChunk(stagedchunk *stagedchunk.StagedChunk)
 
 func (f *fanoutcoordinator) StartFanout(conn net.Conn, jwtTokenString string) error {
 	forwarders := make([]*forwarder.Forwarder, len(f.replicas))
+	expectedSize := f.stagedchunk.Cap()
 
-	slog.Info("Starting fanout", "replicas", f.replicas)
-	
+	slog.Info("Starting fanout", "replicas", f.replicas, "expectedSize", expectedSize)
+
 	for i, replica := range f.replicas {
 		forwarders[i] = forwarder.NewForwarder(replica, f.stagedchunk.OpId, f.stagedchunk.ChunkHandle, f.stagedchunk, f.stagedchunk.Cap(), f.stagedchunk.Offset, f.stagedchunk.Sequence)
 		go forwarders[i].StartForward()
 	}
 
+	// Use LimitReader to read exactly expectedSize bytes
+	// This allows connection reuse (client doesn't need to call CloseWrite)
+	reader := io.LimitReader(conn, int64(expectedSize))
 	buf := make([]byte, 64<<10)
 	total := 0
 	for {
-		n, err := conn.Read(buf)
+		n, err := reader.Read(buf)
 		if n > 0 {
 			total += n
 			if _, writeErr := f.stagedchunk.Write(buf[:n]); writeErr != nil {
@@ -63,7 +67,7 @@ func (f *fanoutcoordinator) StartFanout(conn net.Conn, jwtTokenString string) er
 		}
 		if err != nil {
 			if err == io.EOF {
-				slog.Info("finished reading data from client", "totalBytes", total)
+				slog.Info("finished reading data from client", "totalBytes", total, "expectedSize", expectedSize)
 				// Close forwarders
 				for _, fw := range forwarders {
 					if err := fw.Pw.Close(); err != nil {

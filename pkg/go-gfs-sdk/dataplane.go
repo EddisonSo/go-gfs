@@ -702,11 +702,14 @@ func (c *Client) writeChunk(ctx context.Context, primary csstructs.ReplicaIdenti
 }
 
 func (c *Client) writeChunkWithProgress(ctx context.Context, primary csstructs.ReplicaIdentifier, replicas []csstructs.ReplicaIdentifier, chunkHandle string, data []byte, offset int64, onProgress writeChunkProgress) (uint64, error) {
-	conn, err := dialWithContext(ctx, primary.Hostname, primary.DataPort)
+	conn, err := c.getConn(ctx, primary.Hostname, primary.DataPort)
 	if err != nil {
 		return 0, fmt.Errorf("failed to connect: %w", err)
 	}
-	defer conn.Close()
+	success := false
+	defer func() {
+		c.putConn(conn, success)
+	}()
 
 	if err := setDeadlineFromContext(ctx, conn); err != nil {
 		return 0, err
@@ -773,8 +776,10 @@ func (c *Client) writeChunkWithProgress(ctx context.Context, primary csstructs.R
 		}
 	}
 
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		_ = tcpConn.CloseWrite()
+	// Signal end of data to the server (only needed for non-pooled connections)
+	// When pooling is enabled, server reads exact byte count from JWT claims
+	if c.connPool == nil {
+		closeWrite(conn)
 	}
 
 	resultBytes := make([]byte, 1)
@@ -786,15 +791,19 @@ func (c *Client) writeChunkWithProgress(ctx context.Context, primary csstructs.R
 		return 0, fmt.Errorf("data persistence failed")
 	}
 
+	success = true
 	return offsetValue, nil
 }
 
 func (c *Client) readChunk(ctx context.Context, server csstructs.ReplicaIdentifier, chunkHandle string, w io.Writer) (int64, error) {
-	conn, err := dialWithContext(ctx, server.Hostname, server.DataPort)
+	conn, err := c.getConn(ctx, server.Hostname, server.DataPort)
 	if err != nil {
 		return 0, fmt.Errorf("failed to connect: %w", err)
 	}
-	defer conn.Close()
+	success := false
+	defer func() {
+		c.putConn(conn, success)
+	}()
 
 	if err := setDeadlineFromContext(ctx, conn); err != nil {
 		return 0, err
@@ -867,12 +876,42 @@ func (c *Client) readChunk(ctx context.Context, server csstructs.ReplicaIdentifi
 		return written, fmt.Errorf("failed to stream data: %w", err)
 	}
 
+	success = true
 	return written, nil
 }
 
 func dialWithContext(ctx context.Context, host string, port int) (net.Conn, error) {
 	dialer := net.Dialer{}
 	return dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, port))
+}
+
+// closeWriter is implemented by connections that support half-close.
+type closeWriter interface {
+	CloseWrite() error
+}
+
+// closeWrite signals end of write data on a connection.
+func closeWrite(conn net.Conn) {
+	if cw, ok := conn.(closeWriter); ok {
+		_ = cw.CloseWrite()
+	}
+}
+
+// getConn gets a connection from the pool or creates a new one.
+func (c *Client) getConn(ctx context.Context, host string, port int) (net.Conn, error) {
+	if c.connPool != nil {
+		return c.connPool.Get(ctx, host, port)
+	}
+	return dialWithContext(ctx, host, port)
+}
+
+// putConn returns a connection to the pool or closes it.
+func (c *Client) putConn(conn net.Conn, reuse bool) {
+	if c.connPool != nil && reuse {
+		c.connPool.Put(conn)
+	} else {
+		conn.Close()
+	}
 }
 
 // toReplicaIdentifier converts a ChunkServerInfo to a ReplicaIdentifier.

@@ -30,12 +30,15 @@ const defaultReadConcurrency = 3
 type Option func(*clientConfig)
 
 type clientConfig struct {
-	dialOptions     []grpc.DialOption
-	chunkTimeout    time.Duration
-	maxChunkSize    int64
-	readConcurrency int
-	secretProvider  SecretProvider
-	replicaPicker   ReplicaPicker
+	dialOptions      []grpc.DialOption
+	chunkTimeout     time.Duration
+	maxChunkSize     int64
+	readConcurrency  int
+	secretProvider   SecretProvider
+	replicaPicker    ReplicaPicker
+	enableConnPool   bool
+	connPoolMaxIdle  int
+	connPoolIdleTime time.Duration
 }
 
 // New creates a new SDK client connected to the master gRPC endpoint.
@@ -58,7 +61,7 @@ func New(ctx context.Context, masterAddr string, opts ...Option) (*Client, error
 		return nil, err
 	}
 
-	return &Client{
+	client := &Client{
 		masterAddr:      masterAddr,
 		conn:            conn,
 		master:          pb.NewMasterClient(conn),
@@ -69,7 +72,13 @@ func New(ctx context.Context, masterAddr string, opts ...Option) (*Client, error
 		replicaPicker:   cfg.replicaPicker,
 		chunkCache:      make(map[fileKey]*chunkCache),
 		knownFiles:      make(map[fileKey]struct{}),
-	}, nil
+	}
+
+	if cfg.enableConnPool {
+		client.connPool = NewConnPool(cfg.connPoolMaxIdle, cfg.connPoolIdleTime)
+	}
+
+	return client, nil
 }
 
 // Client is the SDK entry point for interacting with Go-GFS.
@@ -89,10 +98,16 @@ type Client struct {
 	// Cache of files known to exist (successfully created or appended to)
 	knownFilesMu sync.RWMutex
 	knownFiles   map[fileKey]struct{}
+
+	// Connection pool for chunkserver TCP connections (optional)
+	connPool *ConnPool
 }
 
-// Close releases the underlying gRPC connection.
+// Close releases the underlying gRPC connection and connection pool.
 func (c *Client) Close() error {
+	if c.connPool != nil {
+		c.connPool.Close()
+	}
 	if c.conn == nil {
 		return nil
 	}
@@ -144,6 +159,18 @@ func WithReadConcurrency(n int) Option {
 		if n > 0 {
 			cfg.readConcurrency = n
 		}
+	}
+}
+
+// WithConnectionPool enables TCP connection pooling to chunkservers.
+// This reduces connection setup overhead for services that make many requests.
+// maxIdlePerHost controls how many idle connections to keep per chunkserver (default: 4).
+// idleTimeout controls how long idle connections are kept before closing (default: 30s).
+func WithConnectionPool(maxIdlePerHost int, idleTimeout time.Duration) Option {
+	return func(cfg *clientConfig) {
+		cfg.enableConnPool = true
+		cfg.connPoolMaxIdle = maxIdlePerHost
+		cfg.connPoolIdleTime = idleTimeout
 	}
 }
 
