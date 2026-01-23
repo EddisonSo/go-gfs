@@ -37,7 +37,7 @@ func (c *Client) ReadTo(ctx context.Context, path string, w io.Writer) (int64, e
 }
 
 // ReadToWithNamespace streams file contents to the provided writer with a namespace.
-// Uses parallel chunk reads with in-order delivery for improved throughput.
+// Chunks are read sequentially and streamed directly to the writer without buffering.
 func (c *Client) ReadToWithNamespace(ctx context.Context, path, namespace string, w io.Writer) (int64, error) {
 	chunks, err := c.GetChunkLocationsWithNamespace(ctx, path, namespace)
 	if err != nil {
@@ -47,122 +47,19 @@ func (c *Client) ReadToWithNamespace(ctx context.Context, path, namespace string
 		return 0, ErrNoChunkLocations
 	}
 
-	// For single chunk, read directly without parallelism overhead
-	if len(chunks) == 1 {
-		chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
-		defer cancel()
-		return c.readChunkWithFailover(chunkCtx, chunks[0], w)
-	}
-
-	return c.readChunksParallel(ctx, chunks, w)
-}
-
-// chunkResult holds the result of reading a single chunk.
-type chunkResult struct {
-	index int
-	data  []byte
-	err   error
-}
-
-// readChunksParallel reads chunks concurrently and writes them in order.
-func (c *Client) readChunksParallel(ctx context.Context, chunks []*pb.ChunkLocationInfo, w io.Writer) (int64, error) {
-	numChunks := len(chunks)
-	concurrency := c.readConcurrency
-	if concurrency > numChunks {
-		concurrency = numChunks
-	}
-
-	// Channel for work items (chunk indices)
-	work := make(chan int, numChunks)
-	// Channel for results
-	results := make(chan chunkResult, concurrency)
-	// Context for cancellation
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// Start worker goroutines
-	for i := 0; i < concurrency; i++ {
-		go func() {
-			for idx := range work {
-				var buf bytes.Buffer
-				chunkCtx, chunkCancel := context.WithTimeout(ctx, c.chunkTimeout)
-				_, err := c.readChunkWithFailover(chunkCtx, chunks[idx], &buf)
-				chunkCancel()
-
-				select {
-				case results <- chunkResult{index: idx, data: buf.Bytes(), err: err}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-	}
-
-	// Send work items
-	go func() {
-		for i := 0; i < numChunks; i++ {
-			select {
-			case work <- i:
-			case <-ctx.Done():
-				close(work)
-				return
-			}
-		}
-		close(work)
-	}()
-
-	// Collect results and write in order
 	var total int64
-	pending := make(map[int][]byte) // Buffer for out-of-order chunks
-	nextExpected := 0
-	received := 0
-
-	for received < numChunks {
-		select {
-		case result := <-results:
-			received++
-			if result.err != nil {
-				cancel()
-				return total, fmt.Errorf("failed to read chunk %d: %w", result.index, result.err)
-			}
-
-			if result.index == nextExpected {
-				// Write this chunk and any buffered subsequent chunks
-				n, err := w.Write(result.data)
-				total += int64(n)
-				if err != nil {
-					cancel()
-					return total, err
-				}
-				nextExpected++
-
-				// Write any buffered chunks that are now in order
-				for {
-					if data, ok := pending[nextExpected]; ok {
-						n, err := w.Write(data)
-						total += int64(n)
-						if err != nil {
-							cancel()
-							return total, err
-						}
-						delete(pending, nextExpected)
-						nextExpected++
-					} else {
-						break
-					}
-				}
-			} else {
-				// Buffer out-of-order chunk
-				pending[result.index] = result.data
-			}
-
-		case <-ctx.Done():
-			return total, ctx.Err()
+	for _, chunk := range chunks {
+		chunkCtx, cancel := context.WithTimeout(ctx, c.chunkTimeout)
+		n, err := c.readChunkWithFailover(chunkCtx, chunk, w)
+		cancel()
+		total += n
+		if err != nil {
+			return total, err
 		}
 	}
-
 	return total, nil
 }
+
 
 // Append adds data to the end of the file, splitting across chunks as needed.
 func (c *Client) Append(ctx context.Context, path string, data []byte) (int, error) {
