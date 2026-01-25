@@ -287,6 +287,24 @@ func (s *GRPCServer) ClaimPrimary(ctx context.Context, req *pb.ClaimPrimaryReque
 	}, nil
 }
 
+// GetClusterStatus returns status information for all chunkservers
+func (s *GRPCServer) GetClusterStatus(ctx context.Context, req *pb.GetClusterStatusRequest) (*pb.GetClusterStatusResponse, error) {
+	statuses := s.master.GetClusterStatus()
+
+	protoStatuses := make([]*pb.ChunkServerStatus, 0, len(statuses))
+	for _, status := range statuses {
+		protoStatuses = append(protoStatuses, &pb.ChunkServerStatus{
+			Server:     chunkLocationToProto(status.Location),
+			ChunkCount: int32(status.ChunkCount),
+			IsAlive:    status.IsAlive,
+		})
+	}
+
+	return &pb.GetClusterStatusResponse{
+		Servers: protoStatuses,
+	}, nil
+}
+
 // Helper functions to convert internal types to protobuf types
 
 func fileInfoToProto(f *FileInfo) *pb.FileInfoResponse {

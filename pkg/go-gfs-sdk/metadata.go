@@ -175,6 +175,15 @@ func (c *Client) GetChunkLocationsWithNamespace(ctx context.Context, path, names
 	return resp.Chunks, nil
 }
 
+// GetClusterStatus returns status information for all chunkservers.
+func (c *Client) GetClusterStatus(ctx context.Context) ([]*pb.ChunkServerStatus, error) {
+	resp, err := c.master.GetClusterStatus(ctx, &pb.GetClusterStatusRequest{})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Servers, nil
+}
+
 // ProgressFunc is called after each chunk write with bytes written so far.
 type ProgressFunc func(bytesWritten int64)
 

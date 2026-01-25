@@ -32,6 +32,7 @@ const (
 	Master_ListFiles_FullMethodName         = "/master.v1.Master/ListFiles"
 	Master_AllocateChunk_FullMethodName     = "/master.v1.Master/AllocateChunk"
 	Master_GetChunkLocations_FullMethodName = "/master.v1.Master/GetChunkLocations"
+	Master_GetClusterStatus_FullMethodName  = "/master.v1.Master/GetClusterStatus"
 )
 
 // MasterClient is the client API for Master service.
@@ -56,6 +57,8 @@ type MasterClient interface {
 	// Chunk operations
 	AllocateChunk(ctx context.Context, in *AllocateChunkRequest, opts ...grpc.CallOption) (*AllocateChunkResponse, error)
 	GetChunkLocations(ctx context.Context, in *GetChunkLocationsRequest, opts ...grpc.CallOption) (*GetChunkLocationsResponse, error)
+	// Cluster status
+	GetClusterStatus(ctx context.Context, in *GetClusterStatusRequest, opts ...grpc.CallOption) (*GetClusterStatusResponse, error)
 }
 
 type masterClient struct {
@@ -196,6 +199,16 @@ func (c *masterClient) GetChunkLocations(ctx context.Context, in *GetChunkLocati
 	return out, nil
 }
 
+func (c *masterClient) GetClusterStatus(ctx context.Context, in *GetClusterStatusRequest, opts ...grpc.CallOption) (*GetClusterStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetClusterStatusResponse)
+	err := c.cc.Invoke(ctx, Master_GetClusterStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MasterServer is the server API for Master service.
 // All implementations must embed UnimplementedMasterServer
 // for forward compatibility.
@@ -218,6 +231,8 @@ type MasterServer interface {
 	// Chunk operations
 	AllocateChunk(context.Context, *AllocateChunkRequest) (*AllocateChunkResponse, error)
 	GetChunkLocations(context.Context, *GetChunkLocationsRequest) (*GetChunkLocationsResponse, error)
+	// Cluster status
+	GetClusterStatus(context.Context, *GetClusterStatusRequest) (*GetClusterStatusResponse, error)
 	mustEmbedUnimplementedMasterServer()
 }
 
@@ -266,6 +281,9 @@ func (UnimplementedMasterServer) AllocateChunk(context.Context, *AllocateChunkRe
 }
 func (UnimplementedMasterServer) GetChunkLocations(context.Context, *GetChunkLocationsRequest) (*GetChunkLocationsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetChunkLocations not implemented")
+}
+func (UnimplementedMasterServer) GetClusterStatus(context.Context, *GetClusterStatusRequest) (*GetClusterStatusResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetClusterStatus not implemented")
 }
 func (UnimplementedMasterServer) mustEmbedUnimplementedMasterServer() {}
 func (UnimplementedMasterServer) testEmbeddedByValue()                {}
@@ -522,6 +540,24 @@ func _Master_GetChunkLocations_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Master_GetClusterStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetClusterStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MasterServer).GetClusterStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Master_GetClusterStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MasterServer).GetClusterStatus(ctx, req.(*GetClusterStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Master_ServiceDesc is the grpc.ServiceDesc for Master service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -580,6 +616,10 @@ var Master_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetChunkLocations",
 			Handler:    _Master_GetChunkLocations_Handler,
+		},
+		{
+			MethodName: "GetClusterStatus",
+			Handler:    _Master_GetClusterStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

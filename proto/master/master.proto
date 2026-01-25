@@ -195,6 +195,13 @@ message ChunkServerStatus {
     BuildInfo build_info = 4;        // Build information
 }
 
+// Cluster status request/response
+message GetClusterStatusRequest {}
+
+message GetClusterStatusResponse {
+    repeated ChunkServerStatus servers = 1;
+}
+
 // Master service
 service Master {
     // Chunkserver registration and heartbeat
@@ -215,4 +222,7 @@ service Master {
     // Chunk operations
     rpc AllocateChunk(AllocateChunkRequest) returns (AllocateChunkResponse);
     rpc GetChunkLocations(GetChunkLocationsRequest) returns (GetChunkLocationsResponse);
+
+    // Cluster status
+    rpc GetClusterStatus(GetClusterStatusRequest) returns (GetClusterStatusResponse);
 }

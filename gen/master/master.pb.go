@@ -1827,6 +1827,87 @@ func (x *ChunkServerStatus) GetBuildInfo() *BuildInfo {
 	return nil
 }
 
+// Cluster status request/response
+type GetClusterStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetClusterStatusRequest) Reset() {
+	*x = GetClusterStatusRequest{}
+	mi := &file_master_master_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetClusterStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetClusterStatusRequest) ProtoMessage() {}
+
+func (x *GetClusterStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_master_master_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetClusterStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetClusterStatusRequest) Descriptor() ([]byte, []int) {
+	return file_master_master_proto_rawDescGZIP(), []int{31}
+}
+
+type GetClusterStatusResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Servers       []*ChunkServerStatus   `protobuf:"bytes,1,rep,name=servers,proto3" json:"servers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetClusterStatusResponse) Reset() {
+	*x = GetClusterStatusResponse{}
+	mi := &file_master_master_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetClusterStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetClusterStatusResponse) ProtoMessage() {}
+
+func (x *GetClusterStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_master_master_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetClusterStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetClusterStatusResponse) Descriptor() ([]byte, []int) {
+	return file_master_master_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *GetClusterStatusResponse) GetServers() []*ChunkServerStatus {
+	if x != nil {
+		return x.Servers
+	}
+	return nil
+}
+
 var File_master_master_proto protoreflect.FileDescriptor
 
 const file_master_master_proto_rawDesc = "" +
@@ -1954,7 +2035,10 @@ const file_master_master_proto_rawDesc = "" +
 	"chunkCount\x12\x19\n" +
 	"\bis_alive\x18\x03 \x01(\bR\aisAlive\x123\n" +
 	"\n" +
-	"build_info\x18\x04 \x01(\v2\x14.master.v1.BuildInfoR\tbuildInfo2\xfb\a\n" +
+	"build_info\x18\x04 \x01(\v2\x14.master.v1.BuildInfoR\tbuildInfo\"\x19\n" +
+	"\x17GetClusterStatusRequest\"R\n" +
+	"\x18GetClusterStatusResponse\x126\n" +
+	"\aservers\x18\x01 \x03(\v2\x1c.master.v1.ChunkServerStatusR\aservers2\xd8\b\n" +
 	"\x06Master\x12C\n" +
 	"\bRegister\x12\x1a.master.v1.RegisterRequest\x1a\x1b.master.v1.RegisterResponse\x12F\n" +
 	"\tHeartbeat\x12\x1b.master.v1.HeartbeatRequest\x1a\x1c.master.v1.HeartbeatResponse\x12O\n" +
@@ -1972,7 +2056,8 @@ const file_master_master_proto_rawDesc = "" +
 	"RenameFile\x12\x1c.master.v1.RenameFileRequest\x1a\x1d.master.v1.RenameFileResponse\x12F\n" +
 	"\tListFiles\x12\x1b.master.v1.ListFilesRequest\x1a\x1c.master.v1.ListFilesResponse\x12R\n" +
 	"\rAllocateChunk\x12\x1f.master.v1.AllocateChunkRequest\x1a .master.v1.AllocateChunkResponse\x12^\n" +
-	"\x11GetChunkLocations\x12#.master.v1.GetChunkLocationsRequest\x1a$.master.v1.GetChunkLocationsResponseB(Z&eddisonso.com/go-gfs/gen/master;masterb\x06proto3"
+	"\x11GetChunkLocations\x12#.master.v1.GetChunkLocationsRequest\x1a$.master.v1.GetChunkLocationsResponse\x12[\n" +
+	"\x10GetClusterStatus\x12\".master.v1.GetClusterStatusRequest\x1a#.master.v1.GetClusterStatusResponseB(Z&eddisonso.com/go-gfs/gen/master;masterb\x06proto3"
 
 var (
 	file_master_master_proto_rawDescOnce sync.Once
@@ -1986,7 +2071,7 @@ func file_master_master_proto_rawDescGZIP() []byte {
 	return file_master_master_proto_rawDescData
 }
 
-var file_master_master_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_master_master_proto_msgTypes = make([]protoimpl.MessageInfo, 33)
 var file_master_master_proto_goTypes = []any{
 	(*BuildInfo)(nil),                 // 0: master.v1.BuildInfo
 	(*ChunkServerInfo)(nil),           // 1: master.v1.ChunkServerInfo
@@ -2019,6 +2104,8 @@ var file_master_master_proto_goTypes = []any{
 	(*GetChunkLocationsRequest)(nil),  // 28: master.v1.GetChunkLocationsRequest
 	(*GetChunkLocationsResponse)(nil), // 29: master.v1.GetChunkLocationsResponse
 	(*ChunkServerStatus)(nil),         // 30: master.v1.ChunkServerStatus
+	(*GetClusterStatusRequest)(nil),   // 31: master.v1.GetClusterStatusRequest
+	(*GetClusterStatusResponse)(nil),  // 32: master.v1.GetClusterStatusResponse
 }
 var file_master_master_proto_depIdxs = []int32{
 	1,  // 0: master.v1.ChunkLocationInfo.locations:type_name -> master.v1.ChunkServerInfo
@@ -2031,37 +2118,40 @@ var file_master_master_proto_depIdxs = []int32{
 	2,  // 7: master.v1.GetChunkLocationsResponse.chunks:type_name -> master.v1.ChunkLocationInfo
 	1,  // 8: master.v1.ChunkServerStatus.server:type_name -> master.v1.ChunkServerInfo
 	0,  // 9: master.v1.ChunkServerStatus.build_info:type_name -> master.v1.BuildInfo
-	4,  // 10: master.v1.Master.Register:input_type -> master.v1.RegisterRequest
-	6,  // 11: master.v1.Master.Heartbeat:input_type -> master.v1.HeartbeatRequest
-	8,  // 12: master.v1.Master.ReportCommit:input_type -> master.v1.ReportCommitRequest
-	10, // 13: master.v1.Master.RenewLease:input_type -> master.v1.RenewLeaseRequest
-	12, // 14: master.v1.Master.ClaimPrimary:input_type -> master.v1.ClaimPrimaryRequest
-	14, // 15: master.v1.Master.CreateFile:input_type -> master.v1.CreateFileRequest
-	16, // 16: master.v1.Master.GetFile:input_type -> master.v1.GetFileRequest
-	18, // 17: master.v1.Master.DeleteFile:input_type -> master.v1.DeleteFileRequest
-	20, // 18: master.v1.Master.DeleteNamespace:input_type -> master.v1.DeleteNamespaceRequest
-	22, // 19: master.v1.Master.RenameFile:input_type -> master.v1.RenameFileRequest
-	24, // 20: master.v1.Master.ListFiles:input_type -> master.v1.ListFilesRequest
-	26, // 21: master.v1.Master.AllocateChunk:input_type -> master.v1.AllocateChunkRequest
-	28, // 22: master.v1.Master.GetChunkLocations:input_type -> master.v1.GetChunkLocationsRequest
-	5,  // 23: master.v1.Master.Register:output_type -> master.v1.RegisterResponse
-	7,  // 24: master.v1.Master.Heartbeat:output_type -> master.v1.HeartbeatResponse
-	9,  // 25: master.v1.Master.ReportCommit:output_type -> master.v1.ReportCommitResponse
-	11, // 26: master.v1.Master.RenewLease:output_type -> master.v1.RenewLeaseResponse
-	13, // 27: master.v1.Master.ClaimPrimary:output_type -> master.v1.ClaimPrimaryResponse
-	15, // 28: master.v1.Master.CreateFile:output_type -> master.v1.CreateFileResponse
-	17, // 29: master.v1.Master.GetFile:output_type -> master.v1.GetFileResponse
-	19, // 30: master.v1.Master.DeleteFile:output_type -> master.v1.DeleteFileResponse
-	21, // 31: master.v1.Master.DeleteNamespace:output_type -> master.v1.DeleteNamespaceResponse
-	23, // 32: master.v1.Master.RenameFile:output_type -> master.v1.RenameFileResponse
-	25, // 33: master.v1.Master.ListFiles:output_type -> master.v1.ListFilesResponse
-	27, // 34: master.v1.Master.AllocateChunk:output_type -> master.v1.AllocateChunkResponse
-	29, // 35: master.v1.Master.GetChunkLocations:output_type -> master.v1.GetChunkLocationsResponse
-	23, // [23:36] is the sub-list for method output_type
-	10, // [10:23] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	30, // 10: master.v1.GetClusterStatusResponse.servers:type_name -> master.v1.ChunkServerStatus
+	4,  // 11: master.v1.Master.Register:input_type -> master.v1.RegisterRequest
+	6,  // 12: master.v1.Master.Heartbeat:input_type -> master.v1.HeartbeatRequest
+	8,  // 13: master.v1.Master.ReportCommit:input_type -> master.v1.ReportCommitRequest
+	10, // 14: master.v1.Master.RenewLease:input_type -> master.v1.RenewLeaseRequest
+	12, // 15: master.v1.Master.ClaimPrimary:input_type -> master.v1.ClaimPrimaryRequest
+	14, // 16: master.v1.Master.CreateFile:input_type -> master.v1.CreateFileRequest
+	16, // 17: master.v1.Master.GetFile:input_type -> master.v1.GetFileRequest
+	18, // 18: master.v1.Master.DeleteFile:input_type -> master.v1.DeleteFileRequest
+	20, // 19: master.v1.Master.DeleteNamespace:input_type -> master.v1.DeleteNamespaceRequest
+	22, // 20: master.v1.Master.RenameFile:input_type -> master.v1.RenameFileRequest
+	24, // 21: master.v1.Master.ListFiles:input_type -> master.v1.ListFilesRequest
+	26, // 22: master.v1.Master.AllocateChunk:input_type -> master.v1.AllocateChunkRequest
+	28, // 23: master.v1.Master.GetChunkLocations:input_type -> master.v1.GetChunkLocationsRequest
+	31, // 24: master.v1.Master.GetClusterStatus:input_type -> master.v1.GetClusterStatusRequest
+	5,  // 25: master.v1.Master.Register:output_type -> master.v1.RegisterResponse
+	7,  // 26: master.v1.Master.Heartbeat:output_type -> master.v1.HeartbeatResponse
+	9,  // 27: master.v1.Master.ReportCommit:output_type -> master.v1.ReportCommitResponse
+	11, // 28: master.v1.Master.RenewLease:output_type -> master.v1.RenewLeaseResponse
+	13, // 29: master.v1.Master.ClaimPrimary:output_type -> master.v1.ClaimPrimaryResponse
+	15, // 30: master.v1.Master.CreateFile:output_type -> master.v1.CreateFileResponse
+	17, // 31: master.v1.Master.GetFile:output_type -> master.v1.GetFileResponse
+	19, // 32: master.v1.Master.DeleteFile:output_type -> master.v1.DeleteFileResponse
+	21, // 33: master.v1.Master.DeleteNamespace:output_type -> master.v1.DeleteNamespaceResponse
+	23, // 34: master.v1.Master.RenameFile:output_type -> master.v1.RenameFileResponse
+	25, // 35: master.v1.Master.ListFiles:output_type -> master.v1.ListFilesResponse
+	27, // 36: master.v1.Master.AllocateChunk:output_type -> master.v1.AllocateChunkResponse
+	29, // 37: master.v1.Master.GetChunkLocations:output_type -> master.v1.GetChunkLocationsResponse
+	32, // 38: master.v1.Master.GetClusterStatus:output_type -> master.v1.GetClusterStatusResponse
+	25, // [25:39] is the sub-list for method output_type
+	11, // [11:25] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_master_master_proto_init() }
@@ -2075,7 +2165,7 @@ func file_master_master_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_master_master_proto_rawDesc), len(file_master_master_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   31,
+			NumMessages:   33,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
